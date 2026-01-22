@@ -350,7 +350,7 @@ sealed trait GenFormula[V] extends Serializable {
     def extractLets(f: GenFormula[String]): (GenFormula[String], Map[Pred[String],GenFormula[String]]) = f match {
       case True() => (True(), Map.empty)
       case False() => (False(), Map.empty)
-      case p @ Pred(_, _) => (p, Map.empty)
+      case p @ Pred(_, _*) => (p, Map.empty)
       case Not(arg) => {
         val (rarg, lets) = extractLets(arg)
         (Not(rarg), lets)
@@ -386,8 +386,9 @@ sealed trait GenFormula[V] extends Serializable {
         val (rg, letsG) = extractLets(g)
         (rg, letsG + (p -> f))
       }
-      case _ => throw new NotImplementedError("Rho transformation not implemented for this formula type")
+      case _ => throw new NotImplementedError("Extract let is not implemented for this formula type")
     }
+  
 
     val (phi1,lets) = extractLets(phi)
 

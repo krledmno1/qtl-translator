@@ -4,9 +4,9 @@ import scala.io.Source
 
 object Main {
   def main(args: Array[String]): Unit = {
-    if (args.length == 0) {
+    if (args.length == 0 || args.contains("--help") || args.contains("-h")) {
       printUsage()
-      sys.exit(1)
+      sys.exit(if (args.length == 0) 1 else 0)
     }
 
     val negated = args.contains("--neg") || args.contains("-n")
@@ -75,6 +75,7 @@ object Main {
         |
         |Options:
         |  -n, --neg              Translate the negation of the policy
+        |  -h, --help             Show this help message
         |
         |Arguments:
         |  policy-file            Path to the MFOTL policy file to translate
