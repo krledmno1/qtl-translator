@@ -189,13 +189,13 @@ private object PolicyParsers {
     Token.keyword("FALSE") ~/ PassWith(False[String]()) |
     (Token.keyword("NOT") ~/ (Formula2Prefix | Formula9)).map(Not(_)) |
     Predicate |
-    (Term ~ Token.Equals ~/ Term).map(x => Pred(GenFormula.EQ, x._1, x._2)) |
-    (Term ~ Token.Less ~/ Term).map(x => Pred(GenFormula.LT, x._1, x._2)) |
-    (Term ~ Token.LessEq ~/ Term).map(x => Pred(GenFormula.LQ, x._1, x._2)) |
-    (Term ~ Token.Greater ~/ Term).map(x => Pred(GenFormula.GT, x._1, x._2)) |
-    (Term ~ Token.GreaterEq ~/ Term).map(x => Pred(GenFormula.GQ, x._1, x._2)) |
-    (Term ~ Token.keyword("SUBSTRING") ~/ Term).map(x => Pred(GenFormula.SUBSTRING, x._1, x._2)) |
-    (Term ~ Token.keyword("MATCHES") ~/ Term).map(x => Pred(GenFormula.MATCHES, x._1, x._2))
+    (Term ~ Token.Equals ~/ Term).map(x => GenFormula.eql(x._1, x._2)) |
+    (Term ~ Token.Less ~/ Term).map(x => GenFormula.lte(x._1, x._2)) |
+    (Term ~ Token.LessEq ~/ Term).map(x => GenFormula.leq(x._1, x._2)) |
+    (Term ~ Token.Greater ~/ Term).map(x => GenFormula.gte(x._1, x._2)) |
+    (Term ~ Token.GreaterEq ~/ Term).map(x => GenFormula.geq(x._1, x._2)) |
+    (Term ~ Token.keyword("SUBSTRING") ~/ Term).map(x => GenFormula.substr(x._1, x._2)) |
+    (Term ~ Token.keyword("MATCHES") ~/ Term).map(x => GenFormula.matches(x._1, x._2))
   )
 
   val Formula8: P[FormulaS] = P( leftAssoc[FormulaS](Token.keyword("AND"), Formula9, Formula2Prefix, And(_, _)) )

@@ -53,11 +53,11 @@ object Main {
           println(qtl)
         } catch {
           case e: UnsupportedOperationException =>
-            println(s"Error: ${e.getMessage}")
+            println(s"Error: ${e.getMessage()}")
             println("Note: Some MFOTL features are not supported in QTL translation")
             sys.exit(1)
           case e: Exception =>
-            println(s"Error during translation: ${e.getMessage}")
+            println(s"Error during translation: ${e.getMessage()}")
             sys.exit(1)
         }
       case Left(error) =>

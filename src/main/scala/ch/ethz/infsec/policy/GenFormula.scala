@@ -233,8 +233,12 @@ case class MOD() extends MFOTLFunction{
 }
 
 
-
+/***
+  * Intervals for temporal operators.
+  * Lower bound is inclusive, upper bound is exclusive.
+  */
 case class Interval(lower: Int, upper: Option[Int]) {
+  
   def check: List[String] =
     // TODO(JS): Do we want to allow empty intervals?
     if (upper.isDefined && upper.get <= lower) List(s"$this is not a valid interval")
@@ -245,7 +249,13 @@ case class Interval(lower: Int, upper: Option[Int]) {
     case None => s"[$lower,*)"
     case Some(u) => s"[$lower,$u)"
   }
-  def toQTL:String = if (this.equals(Interval.any)) "" else throw new UnsupportedOperationException
+  def toQTL:String = 
+    (lower, upper) match {
+      case (0,None) => ""
+      case (l,None) => s" > ${l-1} "
+      case (0,Some(u)) => s" <= ${u-1} "
+      case erri @ _ => throw new UnsupportedOperationException(s"Double-bounded intervals are not supported in QTL: ${erri}")
+    }
 }
 
 object Interval {
@@ -282,12 +292,13 @@ sealed trait GenFormula[V] extends Serializable {
     def predsToLets(phi: GenFormula[String], lets: Map[Pred[String],GenFormula[String]]): Map[Pred[String],GenFormula[String]] = phi match {
       case True() => lets
       case False() => lets
+      case Rel(_, _, _) => lets
       case p @ Pred(pn, args @ _*) => {
         val newpred = "_" + pn
         for (p <- lets.keys) {
           if (p.relation == newpred)
             if (p.args.toList != args.toList)
-              throw new UnsupportedOperationException(s"Error: Predicate ${pn} used with different arguments in the formula, which is not supported in QTL" )
+              throw new UnsupportedOperationException(s"Predicate ${pn} used with different arguments in the formula, which is not supported in QTL" )
             else
               return lets
         }
@@ -328,6 +339,7 @@ sealed trait GenFormula[V] extends Serializable {
         val map = predsToLets(f, lets)
         predsToLets(g, map)
       }
+      case errf @ _ => throw new UnsupportedOperationException(s"predsToLets is not implemented for this formula type: ${errf}")
     }
 
     val letsMap = predsToLets(phi, Map.empty)
@@ -335,6 +347,7 @@ sealed trait GenFormula[V] extends Serializable {
     def rho(f: GenFormula[String]): GenFormula[String] = f match {
       case True() => True()
       case False() => False()
+      case Rel(EQ(), arg1, arg2) => Rel(EQ(), arg1, arg2)
       case Pred(relation, args @ _*) => Pred("_"+relation, args:_*)
       case Not(arg) => Not(rho(arg))
       case And(arg1, arg2) => And(rho(arg1), rho(arg2))
@@ -344,12 +357,13 @@ sealed trait GenFormula[V] extends Serializable {
       case Prev(i, arg) => Prev(i, rho(arg))
       case Since(i, arg1, arg2) => And(Since(i, Or(rho(arg1), Not(epred)), rho(arg2)), epred)
       case Let(p, f, g) => Let(p, rho(f), rho(g))
-      case _ => throw new NotImplementedError("Rho transformation not implemented for this formula type")
+      case errf @ _ => throw new UnsupportedOperationException(s"Rho transformation not implemented for this formula type: ${errf}")
     }
 
     def extractLets(f: GenFormula[String]): (GenFormula[String], Map[Pred[String],GenFormula[String]]) = f match {
       case True() => (True(), Map.empty)
       case False() => (False(), Map.empty)
+      case Rel(EQ(), arg1, arg2) => (Rel(EQ(), arg1, arg2), Map.empty)
       case p @ Pred(_, _*) => (p, Map.empty)
       case Not(arg) => {
         val (rarg, lets) = extractLets(arg)
@@ -386,7 +400,7 @@ sealed trait GenFormula[V] extends Serializable {
         val (rg, letsG) = extractLets(g)
         (rg, letsG + (p -> f))
       }
-      case _ => throw new NotImplementedError("Extract let is not implemented for this formula type")
+      case errf @ _ => throw new UnsupportedOperationException(s"Extract let is not implemented for this formula type: ${errf}")
     }
   
 
@@ -409,42 +423,59 @@ sealed trait GenFormula[V] extends Serializable {
   def toQTL:String
 }
 
-//sealed trait Operator{
-//  val op:String
-//  override def toString:String = s" $op "
-//}
-//case class EQ() extends Operator{
-//  val op = "="
-//}
-//case class LT() extends Operator{
-//  val op = "<"
-//}
-//case class LE() extends Operator{
-//  val op = "<="
-//}
-//case class GT() extends Operator{
-//  val op = ">"
-//}
-//case class GE() extends Operator{
-//  val op = ">="
-//}
-//case class SUBSTRING() extends Operator{
-//  val op = "SUBSTRING"
-//}
-//case class MATCHES() extends Operator{
-//  val op = "MATCHES"
-//}
-//
-//case class Rel[V](op:Operator, arg1: Term[V],arg2: Term[V]) extends GenFormula[V]{
-//  override def atoms: Set[Pred[V]] = Set()
-//  override def atomsInOrder: Seq[Pred[V]] = Seq()
-//  override def freeVariables: Set[V] = arg1.freeVariables ++ arg2.freeVariables
-//  override def freeVariablesInOrder: Seq[V] = arg1.freeVariablesInOrder ++ arg2.freeVariablesInOrder
-//  override def map[W](mapper: VariableMapper[V, W]): GenFormula[W] = Rel(op,arg1.map(mapper),arg2.map(mapper))
-//  override def intervalCheck: List[String] = Nil
-//  override def toString: String = s"${arg1} ${op} ${arg2}"
-//  override def toQTL: String = toString
-//}
+sealed trait Operator{
+ val op:String
+ override def toString:String = s" $op "
+}
+case class EQ() extends Operator{
+ val op = "="
+}
+case class LT() extends Operator{
+ val op = "<"
+}
+case class LE() extends Operator{
+ val op = "<="
+}
+case class GT() extends Operator{
+ val op = ">"
+}
+case class GE() extends Operator{
+ val op = ">="
+}
+case class SUBSTRING() extends Operator{
+ val op = "SUBSTRING"
+}
+case class MATCHES() extends Operator{
+ val op = "MATCHES"
+}
+
+case class Rel[V](op:Operator, arg1: Term[V],arg2: Term[V]) extends GenFormula[V]{
+ override def atoms: Set[Pred[V]] = Set()
+ override def atomsInOrder: Seq[Pred[V]] = Seq()
+ override def freeVariables: Set[V] = arg1.freeVariables ++ arg2.freeVariables
+ override def freeVariablesInOrder: Seq[V] = arg1.freeVariablesInOrder ++ arg2.freeVariablesInOrder
+ override def inferTypes(signature: Signature): TypeConstraints[V] = {
+   val (tc1, tty1) = arg1.inferType(signature)
+   val (tc2, tty2) = arg2.inferType(signature)
+   val tc = tc1 ++ tc2
+   op match{
+    case EQ() => tty1.unify(tty2)
+    case SUBSTRING() | MATCHES() => 
+      tty1.unify(TypeSymbol.const(DataType.STRING))
+      tty2.unify(TypeSymbol.const(DataType.STRING))
+    case LT() | LE() | GT() | GE() => 
+      tty1.enforceNumeric().unify(tty2.enforceNumeric())
+   }
+   tc
+ }
+ override def map[W](mapper: VariableMapper[V, W]): GenFormula[W] = Rel(op,arg1.map(mapper),arg2.map(mapper))
+ override def intervalCheck: List[String] = Nil
+ override def toString: String = s"${arg1} ${op} ${arg2}"
+ override def toQTL: String = op match{
+  case EQ() => s"${arg1.toQTL} = ${arg2.toQTL}"
+  case _ => throw new NotImplementedError("Relational operators other than equality not supported in QTL")
+ }
+}
 
 case class True[V]() extends GenFormula[V] {
   override val atoms: Set[Pred[V]] = Set.empty
@@ -481,22 +512,22 @@ case class Pred[V](relation: String, args: Term[V]*) extends GenFormula[V] {
     val tc = tcs.fold(TypeConstraints[V](Map.empty))(_ ++ _)
 
     // TODO(JS): Replace this hack with proper support for built-in relations.
-    if (relation.startsWith("__")) {
-      (ttys.toList, relation) match {
-        case (ty1 :: ty2 :: Nil, GenFormula.EQ) => ty1.unify(ty2)
-        case (ty1 :: ty2 :: Nil, GenFormula.SUBSTRING) =>
-          ty1.unify(TypeSymbol.const(DataType.STRING))
-          ty2.unify(TypeSymbol.const(DataType.STRING))
-        case (ty1 :: ty2 :: Nil, GenFormula.MATCHES) =>
-          ty1.unify(TypeSymbol.const(DataType.STRING))
-          ty2.unify(TypeSymbol.const(DataType.STRING))
-        case (ty1 :: ty2 :: Nil, _) => ty1.enforceNumeric().unify(ty2)
-        case _ => throw new Exception("Wrong arity for predicate " + relation)
-      }
-    } else {
+    // if (relation.startsWith("__")) {
+    //   (ttys.toList, relation) match {
+    //     case (ty1 :: ty2 :: Nil, GenFormula.EQ) => ty1.unify(ty2)
+    //     case (ty1 :: ty2 :: Nil, GenFormula.SUBSTRING) =>
+    //       ty1.unify(TypeSymbol.const(DataType.STRING))
+    //       ty2.unify(TypeSymbol.const(DataType.STRING))
+    //     case (ty1 :: ty2 :: Nil, GenFormula.MATCHES) =>
+    //       ty1.unify(TypeSymbol.const(DataType.STRING))
+    //       ty2.unify(TypeSymbol.const(DataType.STRING))
+    //     case (ty1 :: ty2 :: Nil, _) => ty1.enforceNumeric().unify(ty2)
+    //     case _ => throw new Exception("Wrong arity for predicate " + relation)
+    //   }
+    // } else {
       for ((ty, cty) <- ttys zip signature((relation, args.length))) {
         ty.unify(TypeSymbol.const(cty))
-      }
+      // }
     }
     tc
   }
@@ -619,7 +650,7 @@ case class Next[V](interval: Interval, arg: GenFormula[V]) extends GenFormula[V]
   override def map[W](mapper: VariableMapper[V, W]): Next[W] = Next(interval, arg.map(mapper))
   override def intervalCheck: List[String] = interval.check ++ arg.intervalCheck
   override def toString: String = s"NEXT $interval ($arg)"
-  override def toQTL: String = throw new UnsupportedOperationException
+  override def toQTL: String = throw new UnsupportedOperationException("Next operator not supported in QTL")
 }
 
 case class Since[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -664,7 +695,7 @@ case class Until[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]
   override def map[W](mapper: VariableMapper[V, W]): Until[W] = Until(interval, arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ interval.check ++ arg2.intervalCheck
   override def toString: String = s"($arg1) UNTIL $interval ($arg2)"
-  override def toQTL: String = throw new UnsupportedOperationException
+  override def toQTL: String = throw new UnsupportedOperationException("Until operator not supported in QTL")
 }
 
 case class Release[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -798,19 +829,11 @@ case class Aggr[V](r:Var[V], af:AggregateFunction, x:Var[V], f:GenFormula[V], gs
   override def toString: String =
     if(gs.isEmpty) s"$r <- $af $x $f"
     else  s"$r <- $af $x; ${gs.mkString(",")} $f"
-  override def toQTL: String = throw new NotImplementedError("Aggregations in QTL")
+  override def toQTL: String = throw new NotImplementedError("Aggregations not supported in QTL")
 }
 
 object GenFormula {
   type Signature = Map[(String, Int), Seq[DataType]]
-
-  val EQ = "__eq"
-  val LT = "__less"
-  val LQ = "__less__eq"
-  val GT = "__greater"
-  val GQ = "__greater__eq"
-  val SUBSTRING = "__substring"
-  val MATCHES = "__matches"
 
   def implies[V](arg1: GenFormula[V], arg2: GenFormula[V]): GenFormula[V] = Or(Not(arg1), arg2)
   def equiv[V](arg1: GenFormula[V], arg2: GenFormula[V]): GenFormula[V] = And(implies(arg1, arg2), implies(arg2, arg1))
@@ -820,11 +843,13 @@ object GenFormula {
   def always[V](interval: Interval = Interval.any, arg: GenFormula[V]): GenFormula[V] = Release(interval, False(), arg)
   def ex[V](vs:Seq[Var[V]], arg:GenFormula[V]):GenFormula[V] = vs.foldRight(arg)((v,a) => Ex[V](v.variable,a))
   def all[V](vs:Seq[Var[V]], arg:GenFormula[V]):GenFormula[V] = vs.foldRight(arg)((v,a) => All[V](v.variable,a))
-  def eql[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Pred(EQ,t1,t2)
-  def lte[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Pred(LT,t1,t2)
-  def leq[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Pred(LQ,t1,t2)
-  def gte[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Pred(GT,t1,t2)
-  def geq[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Pred(GQ,t1,t2)
+  def eql[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(EQ(),t1,t2)
+  def lte[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(LT(),t1,t2)
+  def leq[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(LE(),t1,t2)
+  def gte[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(GT(),t1,t2)
+  def geq[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(GE(),t1,t2)
+  def substr[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(SUBSTRING(),t1,t2)
+  def matches[V](t1:Term[V],t2:Term[V]):GenFormula[V] = Rel(MATCHES(),t1,t2)
 
   def i2f[V](t:Term[V]):Term[V] = Apply1(I2F(),t)
   def f2i[V](t:Term[V]):Term[V] = Apply1(F2I(),t)

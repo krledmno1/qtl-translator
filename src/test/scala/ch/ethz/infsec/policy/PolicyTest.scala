@@ -11,15 +11,15 @@ class PolicyTest extends FunSuite with Matchers {
   val Qxy = Pred("Q", Var("x"), Var("y"))
   val Qii: GenFormula[String] = Pred("Q", Const(7), Const(-42))
   val Qsx = Pred("Q", Const("foo"), Var("x"))
-  val Eqxy = Pred("__eq", Var("x"), Var("y"))
-  val Eqix = Pred("__eq", Const(-42), Var("x"))
-  val Eqxi = Pred("__eq", Var("x"), Const(-42))
-  val Eqixp = Pred("__eq", Const(42), Var("x"))
-  val Eqxip = Pred("__eq", Var("x"), Const(42))
-  val Lessxi = Pred("__less", Var("x"), Const(-123))
-  val Lessix = Pred("__less", Const(-123), Var("x"))
-  val Lessxip = Pred("__less", Var("x"), Const(123))
-  val Lessixp = Pred("__less", Const(123), Var("x"))
+  val Eqxy = Rel(EQ(), Var("x"), Var("y"))
+  val Eqix = Rel(EQ(), Const(-42), Var("x"))
+  val Eqxi = Rel(EQ(), Var("x"), Const(-42))
+  val Eqixp = Rel(EQ(), Const(42), Var("x"))
+  val Eqxip = Rel(EQ(), Var("x"), Const(42))
+  val Lessxi = Rel(LT(), Var("x"), Const(-123))
+  val Lessix = Rel(LT(), Const(-123), Var("x"))
+  val Lessxip = Rel(LT(), Var("x"), Const(123))
+  val Lessixp = Rel(LT(), Const(123), Var("x"))
 
 
   test("Atomic formulas should be parsed correctly") {
@@ -52,8 +52,8 @@ class PolicyTest extends FunSuite with Matchers {
     Policy.parse("x < 123").right.value shouldBe Lessxip
     Policy.parse("123<x").right.value shouldBe Lessixp
     Policy.parse("123 < x").right.value shouldBe Lessixp
-    Policy.parse("x SUBSTRING \"foo\"").right.value shouldBe Pred(GenFormula.SUBSTRING, Var("x"), Const("foo"))
-    Policy.parse("x MATCHES r\"foo\"").right.value shouldBe Pred(GenFormula.MATCHES, Var("x"), Const("foo"))
+    Policy.parse("x SUBSTRING \"foo\"").right.value shouldBe Rel(SUBSTRING(), Var("x"), Const("foo"))
+    Policy.parse("x MATCHES r\"foo\"").right.value shouldBe Rel(MATCHES(), Var("x"), Const("foo"))
   }
 
   test("Propositional formulas should be parsed correctly") {
