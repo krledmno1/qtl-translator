@@ -250,10 +250,11 @@ case class Interval(lower: Int, upper: Option[Int]) {
     case Some(u) => s"[$lower,$u)"
   }
   def toQTL:String = 
+    // [lower, upper) = (lower-1, upper) = (lower-1, upper-1]
     (lower, upper) match {
       case (0,None) => ""
-      case (l,None) => s" > ${l-1} "
-      case (0,Some(u)) => s" <= ${u-1} "
+      case (l,None) => s"[> ${l-1} ]"
+      case (0,Some(u)) => s"[<= ${u-1} ]"
       case erri @ _ => throw new UnsupportedOperationException(s"Double-bounded intervals are not supported in QTL: ${erri}")
     }
 }

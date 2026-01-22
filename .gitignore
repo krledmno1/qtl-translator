@@ -1,0 +1,12 @@
+.DS_store
+.idea/
+target/
+*.iml
+.attach*
+tmp
+.classpath
+.project
+.settings
+.vscode
+.bloop
+.metals
