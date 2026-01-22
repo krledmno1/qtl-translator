@@ -297,9 +297,7 @@ sealed trait GenFormula[V] extends Serializable {
         val newpred = "_" + pn
         for (p <- lets.keys) {
           if (p.relation == newpred)
-            if (p.args.toList != args.toList)
-              throw new UnsupportedOperationException(s"Predicate ${pn} used with different arguments in the formula, which is not supported in QTL" )
-            else
+            if (p.args.toList == args.toList)
               return lets
         }
         val pred = Pred(newpred, args:_*)
