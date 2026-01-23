@@ -187,7 +187,7 @@ case class Apply1[V](f: MFOTLFunction, t: Term[V]) extends Apply[V] {
 
   override def map[W](mapper: VariableMapper[V, W]): Apply1[W] = Apply1(f,t.map(mapper))
   override def toString: String = s"$f($t)"
-  override def toQTL: String = throw new NotImplementedError("Functional terms in QTL")
+  override def toQTL: String = throw new UnsupportedOperationException("Functional terms in QTL")
 }
 
 case class Apply2[V](f: MFOTLFunction, t1: Term[V],t2: Term[V]) extends Apply[V] {
@@ -203,7 +203,7 @@ case class Apply2[V](f: MFOTLFunction, t1: Term[V],t2: Term[V]) extends Apply[V]
 
   override def map[W](mapper: VariableMapper[V, W]): Apply2[W] = Apply2(f,t1.map(mapper),t2.map(mapper))
   override def toString: String = s"$t1$f$t2"
-  override def toQTL: String = throw new NotImplementedError("Functional terms in QTL")
+  override def toQTL: String = throw new UnsupportedOperationException("Functional terms in QTL")
 }
 
 sealed trait MFOTLFunction{
@@ -472,7 +472,7 @@ case class Rel[V](op:Operator, arg1: Term[V],arg2: Term[V]) extends GenFormula[V
  override def toString: String = s"${arg1} ${op} ${arg2}"
  override def toQTL: String = op match{
   case EQ() => s"${arg1.toQTL} = ${arg2.toQTL}"
-  case _ => throw new NotImplementedError("Relational operators other than equality not supported in QTL")
+  case _ => throw new UnsupportedOperationException("Relational operators other than equality not supported in QTL")
  }
 }
 
@@ -549,7 +549,7 @@ case class Not[V](arg: GenFormula[V]) extends GenFormula[V] {
   override def map[W](mapper: VariableMapper[V, W]): Not[W] = Not(arg.map(mapper))
   override def intervalCheck: List[String] = arg.intervalCheck
   override def toString: String = s"NOT ($arg)"
-  override def toQTL: String = s"! (${arg.toQTL})"
+  override def toQTL: String = s"! ${GenFormula.toParenthesizedQTL(arg)}"
 }
 
 case class And[V](arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -564,7 +564,7 @@ case class And[V](arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V
   override def map[W](mapper: VariableMapper[V, W]): And[W] = And(arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ arg2.intervalCheck
   override def toString: String = s"($arg1) AND ($arg2)"
-  override def toQTL: String = s"(${arg1.toQTL}) & (${arg2.toQTL})"
+  override def toQTL: String = s"${GenFormula.toParenthesizedQTL(arg1)} & ${GenFormula.toParenthesizedQTL(arg2)}"
 }
 
 case class Or[V](arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -579,7 +579,7 @@ case class Or[V](arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V]
   override def map[W](mapper: VariableMapper[V, W]): Or[W] = Or(arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ arg2.intervalCheck
   override def toString: String = s"($arg1) OR ($arg2)"
-  override def toQTL: String = s"(${arg1.toQTL}) | (${arg2.toQTL})"
+  override def toQTL: String = s"${GenFormula.toParenthesizedQTL(arg1)} | ${GenFormula.toParenthesizedQTL(arg2)}"
 }
 
 case class All[V](variable: V, arg: GenFormula[V]) extends GenFormula[V] {
@@ -598,7 +598,7 @@ case class All[V](variable: V, arg: GenFormula[V]) extends GenFormula[V] {
 
   override def intervalCheck: List[String] = arg.intervalCheck
   override def toString: String = s"FORALL $variable. $arg"
-  override def toQTL: String = s"Forall ${Var(variable).toQTL}. (${arg.toQTL})"
+  override def toQTL: String = s"Forall ${Var(variable).toQTL}. ${GenFormula.toParenthesizedQTL(arg)}"
 
 }
 
@@ -618,7 +618,7 @@ case class Ex[V](variable: V, arg: GenFormula[V]) extends GenFormula[V] {
 
   override def intervalCheck: List[String] = arg.intervalCheck
   override def toString: String = s"EXISTS $variable. $arg"
-  override def toQTL: String = s"Exists ${Var(variable).toQTL}. (${arg.toQTL})"
+  override def toQTL: String = s"Exists ${Var(variable).toQTL}. ${GenFormula.toParenthesizedQTL(arg)}"
 
 }
 
@@ -634,7 +634,7 @@ case class Prev[V](interval: Interval, arg: GenFormula[V]) extends GenFormula[V]
   override def map[W](mapper: VariableMapper[V, W]): Prev[W] = Prev(interval, arg.map(mapper))
   override def intervalCheck: List[String] = interval.check ++ arg.intervalCheck
   override def toString: String = s"PREVIOUS $interval ($arg)"
-  override def toQTL: String = s"@ ${interval.toQTL} (${arg.toQTL})"
+  override def toQTL: String = s"@ ${interval.toQTL} ${GenFormula.toParenthesizedQTL(arg)}"
 }
 
 case class Next[V](interval: Interval, arg: GenFormula[V]) extends GenFormula[V] {
@@ -664,7 +664,10 @@ case class Since[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]
   override def map[W](mapper: VariableMapper[V, W]): Since[W] = Since(interval, arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ interval.check ++ arg2.intervalCheck
   override def toString: String = s"($arg1) SINCE $interval ($arg2)"
-  override def toQTL: String = if (!arg1.equals(True[V]())) s"(${arg1.toQTL}) S ${interval.toQTL} (${arg2.toQTL})" else s"P ${interval.toQTL} (${arg2.toQTL})"
+  override def toQTL: String = if (!arg1.equals(True[V]())) 
+      s"${GenFormula.toParenthesizedQTL(arg1)} S ${interval.toQTL} ${GenFormula.toParenthesizedQTL(arg2)}" 
+    else 
+      s"P ${interval.toQTL} ${GenFormula.toParenthesizedQTL(arg2)}"
 }
 
 case class Trigger[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -679,7 +682,7 @@ case class Trigger[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[
   override def map[W](mapper: VariableMapper[V, W]): Trigger[W] = Trigger(interval, arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ interval.check ++ arg2.intervalCheck
   override def toString: String = s"($arg1) TRIGGER $interval ($arg2)"
-  override def toQTL: String = Not(Since(interval, Not(arg1), Not(arg1))).toQTL
+  override def toQTL: String = Not(Since(interval, Not(arg1), Not(arg2))).toQTL
 }
 
 case class Until[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[V]) extends GenFormula[V] {
@@ -709,7 +712,7 @@ case class Release[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[
   override def map[W](mapper: VariableMapper[V, W]): Release[W] = Release(interval, arg1.map(mapper), arg2.map(mapper))
   override def intervalCheck: List[String] = arg1.intervalCheck ++ interval.check ++ arg2.intervalCheck
   override def toString: String = s"($arg1) RELEASE $interval ($arg2)"
-  override def toQTL: String = Not(Since(interval, Not(arg1), Not(arg1))).toQTL
+  override def toQTL: String = throw new UnsupportedOperationException("Release operator not supported in QTL")
 }
 
 case class Let[V](p:Pred[V],f:GenFormula[V], g:GenFormula[V]) extends GenFormula[V]{
@@ -828,7 +831,7 @@ case class Aggr[V](r:Var[V], af:AggregateFunction, x:Var[V], f:GenFormula[V], gs
   override def toString: String =
     if(gs.isEmpty) s"$r <- $af $x $f"
     else  s"$r <- $af $x; ${gs.mkString(",")} $f"
-  override def toQTL: String = throw new NotImplementedError("Aggregations not supported in QTL")
+  override def toQTL: String = throw new UnsupportedOperationException("Aggregations not supported in QTL")
 }
 
 object GenFormula {
@@ -905,5 +908,10 @@ object GenFormula {
     pos(phi)
   }
 
-  
+  def toParenthesizedQTL[V](sf:GenFormula[V]):String = sf match {
+    case f @ And(_, _) => s"(${f.toQTL})" 
+    case f @ Or(_, _) => s"(${f.toQTL})" 
+    case f @ Since(_,_,_) => s"(${f.toQTL})"
+    case _ => sf.toQTL
+  }
 }

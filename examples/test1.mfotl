@@ -1,0 +1,1 @@
+P0(x1,x3,x2) AND (NOT P0(x3,x2,x1))

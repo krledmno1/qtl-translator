@@ -224,7 +224,7 @@ class PolicyTest extends FunSuite with Matchers {
   test("Printing QTL syntax should be correct") {
     val policyText = "EXISTS x. P(x)"
 
-    val expectedQTL = "Exists x. (P(x))"
+    val expectedQTL = "Exists x. P(x)"
 
     val formula = Policy.parse(policyText).right.value
     val qtlString = formula.toQTL
