@@ -104,7 +104,7 @@
                 <artifactId>scalatest-maven-plugin</artifactId>
                 <version>2.0.0</version>
                 <configuration>
-                    <runpath>${project.build.directory}/scala-test-classes</runpath>
+                    <runpath>${project.build.directory}/test-classes</runpath>
                     <reportsDirectory>${project.build.directory}/reports</reportsDirectory>
                 </configuration>
                 <executions>

@@ -5,6 +5,7 @@ import ch.ethz.infsec.policy.GenFormula.Signature
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.annotation.tailrec
+import scala.collection.immutable.ListMap
 
 
 // This is explicitly not a case class, such that each instance represent a fresh variable name.
@@ -150,7 +151,10 @@ case class Const[V](value: Any) extends Term[V] {
 
   override def map[W](mapper: VariableMapper[V, W]): Const[W] = Const(value)
   override def toString: String = value.toString
-  override def toQTL: String = toString
+  override def toQTL: String = value match {
+    case s: String => "\"" + s + "\""
+    case _ => value.toString
+  }
 }
 
 case class Var[V](variable: V) extends Term[V] {
@@ -289,135 +293,96 @@ sealed trait GenFormula[V] extends Serializable {
   }
 
   def translateToQTL(epred: Pred[String]): (GenFormula[String], Map[Pred[String],GenFormula[String]]) = {
-    val phi = this.asInstanceOf[GenFormula[String]]
-    def predsToLets(phi: GenFormula[String], lets: Map[Pred[String],GenFormula[String]]): Map[Pred[String],GenFormula[String]] = phi match {
-      case True() => lets
-      case False() => lets
-      case Rel(_, _, _) => lets
-      case p @ Pred(pn, args @ _*) => {
-        val newpred = "_" + pn
-        for (p <- lets.keys) {
-          if (p.relation == newpred)
-            if (p.args.toList == args.toList)
-              return lets
-        }
-        val pred = Pred(newpred, args:_*)
-        val let = And(epred, Prev(Interval.any, Since(Interval.any,Not(epred),p))) 
-        lets + (pred -> let)
-      }
+    val phi0 = this.asInstanceOf[GenFormula[String]]
+
+    // MFOTL LET is a non-recursive definition, so it can be eliminated by substitution.
+    // DejaVu macros cannot express it directly: their expansion requires the call-site
+    // argument names to coincide with the head parameter names.
+    val phi1 = GenFormula.expandLets(phi0)
+
+    if (phi1.atoms.exists(_.relation == epred.relation))
+      throw new UnsupportedOperationException(
+        s"The formula must not use the event predicate '${epred.relation}', which marks database boundaries in the translated trace")
+
+    for ((rel, preds) <- phi1.atoms.groupBy(_.relation) if preds.map(_.args.length).size > 1)
+      throw new UnsupportedOperationException(
+        s"Predicate '${rel}' is used with different arities; DejaVu matches events by name only")
+
+    // DejaVu rejects two quantifiers with the same variable name in one formula.
+    val phi = GenFormula.uniquifyBoundVariables(phi1)
+
+    def distinctVarArgs(args: Seq[Term[String]]): Boolean = {
+      val vars = args.collect { case Var(v) => v }
+      vars.length == args.length && vars.distinct.length == vars.length
+    }
+
+    // Lifts a predicate occurrence to the database boundary: e() AND PREVIOUS ((NOT e()) SINCE p).
+    def lifted(p: Pred[String]): GenFormula[String] =
+      And(epred, Prev(Interval.any, Since(Interval.any, Not(epred), p)))
+
+    // One let per predicate and argument combination, because DejaVu macro expansion is
+    // name-sensitive. Occurrences with constant or repeated arguments get no let: DejaVu
+    // rejects such macro heads, so rho inlines the lifted formula at those occurrences.
+    def predsToLets(f: GenFormula[String],
+                    lets: ListMap[Pred[String],GenFormula[String]]): ListMap[Pred[String],GenFormula[String]] = f match {
+      case True() | False() | Rel(_, _, _) => lets
+      case p @ Pred(pn, args @ _*) =>
+        if (distinctVarArgs(args) && !lets.contains(Pred("_" + pn, args:_*)))
+          lets + (Pred("_" + pn, args:_*) -> lifted(p))
+        else lets
       case Not(arg) => predsToLets(arg, lets)
-      case And(arg1, arg2) => {
-        val map = predsToLets(arg1, lets) 
-        predsToLets(arg2, map)
-      }
-      case Or(arg1, arg2) => {
-        val map = predsToLets(arg1, lets) 
-        predsToLets(arg2, map)
-      }
+      case And(arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
+      case Or(arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
       case All(_, arg) => predsToLets(arg, lets)
       case Ex(_, arg) => predsToLets(arg, lets)
       case Prev(_, arg) => predsToLets(arg, lets)
       case Next(_, arg) => predsToLets(arg, lets)
-      case Since(_, arg1, arg2) => {
-        val map = predsToLets(arg1, lets)
-        predsToLets(arg2, map)
-      }
-      case Trigger(_, arg1, arg2) => {
-        val map = predsToLets(arg1, lets)
-        predsToLets(arg2, map)
-      }
-      case Until(_, arg1, arg2) => {
-        val map = predsToLets(arg1, lets)
-        predsToLets(arg2, map)
-      }
-      case Release(_, arg1, arg2) => {
-        val map = predsToLets(arg1, lets)
-        predsToLets(arg2, map)
-      }
-      case Let(_, f, g) => {
-        val map = predsToLets(f, lets)
-        predsToLets(g, map)
-      }
-      case errf @ _ => throw new UnsupportedOperationException(s"predsToLets is not implemented for this formula type: ${errf}")
+      case Since(_, arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
+      case Trigger(_, arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
+      case Until(_, arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
+      case Release(_, arg1, arg2) => predsToLets(arg2, predsToLets(arg1, lets))
+      case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
     }
 
-    val letsMap = predsToLets(phi, Map.empty)
+    val letsMap = predsToLets(phi, ListMap.empty)
 
+    // Every formula produced by rho holds only at positions where e() holds. This invariant is
+    // what makes the SINCE and PREVIOUS cases below correct, so the leaves that are true at
+    // arbitrary positions (TRUE, equality, negation) must be guarded with e().
     def rho(f: GenFormula[String]): GenFormula[String] = f match {
-      case True() => True()
+      case True() => epred
       case False() => False()
-      case Rel(EQ(), arg1, arg2) => Rel(EQ(), arg1, arg2)
-      case Pred(relation, args @ _*) => Pred("_"+relation, args:_*)
-      case Not(arg) => Not(rho(arg))
+      case r @ Rel(EQ(), _, _) => And(r, epred)
+      case p @ Pred(relation, args @ _*) =>
+        if (distinctVarArgs(args)) Pred("_" + relation, args:_*) else lifted(p)
+      case Not(arg) => And(Not(rho(arg)), epred)
       case And(arg1, arg2) => And(rho(arg1), rho(arg2))
       case Or(arg1, arg2) => Or(rho(arg1), rho(arg2))
       case All(bound, arg) => All(bound, rho(arg))
       case Ex(bound, arg) => Ex(bound, rho(arg))
-      case Prev(i, arg) => Prev(i, rho(arg))
+      // The metric constraint sits on the inner SINCE, which measures the time from the
+      // previous e() to the last event of the current database. This equals the MFOTL
+      // timestamp difference unless the current database is empty.
+      case Prev(i, arg) => And(epred, Prev(Interval.any, Since(i, Not(epred), rho(arg))))
       case Since(i, arg1, arg2) => And(Since(i, Or(rho(arg1), Not(epred)), rho(arg2)), epred)
-      case Let(p, f, g) => Let(p, rho(f), rho(g))
-      case errf @ _ => throw new UnsupportedOperationException(s"Rho transformation not implemented for this formula type: ${errf}")
+      case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
     }
 
-    def extractLets(f: GenFormula[String]): (GenFormula[String], Map[Pred[String],GenFormula[String]]) = f match {
-      case True() => (True(), Map.empty)
-      case False() => (False(), Map.empty)
-      case Rel(EQ(), arg1, arg2) => (Rel(EQ(), arg1, arg2), Map.empty)
-      case p @ Pred(_, _*) => (p, Map.empty)
-      case Not(arg) => {
-        val (rarg, lets) = extractLets(arg)
-        (Not(rarg), lets)
-      }
-      case And(arg1, arg2) => {
-        val (rarg1, lets1) = extractLets(arg1)
-        val (rarg2, lets2) = extractLets(arg2)
-        (And(rarg1, rarg2), lets1 ++ lets2)
-      }
-      case Or(arg1, arg2) => {
-        val (rarg1, lets1) = extractLets(arg1)
-        val (rarg2, lets2) = extractLets(arg2)
-        (Or(rarg1, rarg2), lets1 ++ lets2)
-      }
-      case All(bound, arg) => {
-        val (rarg, lets) = extractLets(arg)
-        (All(bound, rarg), lets)
-      }
-      case Ex(bound, arg) => {
-        val (rarg, lets) = extractLets(arg)
-        (Ex(bound, rarg), lets)
-      }
-      case Prev(i, arg) => {
-        val (rarg, lets) = extractLets(arg)
-        (Prev(i, rarg), lets)
-      }
-      case Since(i, arg1, arg2) => {
-        val (rarg1, lets1) = extractLets(arg1)
-        val (rarg2, lets2) = extractLets(arg2)
-        (Since(i, rarg1, rarg2), lets1 ++ lets2)
-      }
-      case Let(p, f, g) => {
-        val (rg, letsG) = extractLets(g)
-        (rg, letsG + (p -> f))
-      }
-      case errf @ _ => throw new UnsupportedOperationException(s"Extract let is not implemented for this formula type: ${errf}")
-    }
-  
-
-    val (phi1,lets) = extractLets(phi)
-
-    (rho(phi1), lets++letsMap)
-
-    // letsMap.values.foldRight(rho(phi)) {
-    //   (let, acc) => let(acc)
-    // }
+    (rho(phi), letsMap)
   }
 
   def toQTLString(neg:Boolean, epred: Pred[String]):String = {
     val (fma,lets) = this.translateToQTL(epred)
-    val closed = fma.close(neg)
-    val f = if (neg) Not(closed) else closed
-    "prop fma: " + f.toQTL + " where " + 
-      lets.map{ case (p, body) => s"${p.toString} := ${body.toQTL}"}.mkString(", ")
+    val closed = fma.freeVariables.toList.sorted.foldLeft(fma) {
+      (acc, v) => if (neg) Ex(v, acc) else All(v, acc)
+    }
+    // Without the negation, the formula is relativized to e() positions: DejaVu evaluates the
+    // property at every event, and the raw events between two e()s must not count as verdicts.
+    val f = if (neg) Not(closed) else GenFormula.implies(epred, closed)
+    val letsStr =
+      if (lets.isEmpty) ""
+      else " where " + lets.map{ case (p, body) => s"${p.toQTL} := ${body.toQTL}"}.mkString(", ")
+    "prop fma: " + f.toQTL + letsStr
   }
   def toQTL:String
 }
@@ -510,23 +475,8 @@ case class Pred[V](relation: String, args: Term[V]*) extends GenFormula[V] {
     val (tcs, ttys) = args.map(_.inferType(signature)).unzip
     val tc = tcs.fold(TypeConstraints[V](Map.empty))(_ ++ _)
 
-    // TODO(JS): Replace this hack with proper support for built-in relations.
-    // if (relation.startsWith("__")) {
-    //   (ttys.toList, relation) match {
-    //     case (ty1 :: ty2 :: Nil, GenFormula.EQ) => ty1.unify(ty2)
-    //     case (ty1 :: ty2 :: Nil, GenFormula.SUBSTRING) =>
-    //       ty1.unify(TypeSymbol.const(DataType.STRING))
-    //       ty2.unify(TypeSymbol.const(DataType.STRING))
-    //     case (ty1 :: ty2 :: Nil, GenFormula.MATCHES) =>
-    //       ty1.unify(TypeSymbol.const(DataType.STRING))
-    //       ty2.unify(TypeSymbol.const(DataType.STRING))
-    //     case (ty1 :: ty2 :: Nil, _) => ty1.enforceNumeric().unify(ty2)
-    //     case _ => throw new Exception("Wrong arity for predicate " + relation)
-    //   }
-    // } else {
-      for ((ty, cty) <- ttys zip signature((relation, args.length))) {
-        ty.unify(TypeSymbol.const(cty))
-      // }
+    for ((ty, cty) <- ttys zip signature((relation, args.length))) {
+      ty.unify(TypeSymbol.const(cty))
     }
     tc
   }
@@ -534,7 +484,7 @@ case class Pred[V](relation: String, args: Term[V]*) extends GenFormula[V] {
   override def map[W](mapper: VariableMapper[V, W]): Pred[W] = Pred(relation, args.map(_.map(mapper)):_*)
   override def intervalCheck: List[String] = Nil
   override def toString: String = s"$relation(${args.mkString(", ")})"
-  override def toQTL: String = toString
+  override def toQTL: String = s"$relation(${args.map(_.toQTL).mkString(", ")})"
 }
 
 case class Not[V](arg: GenFormula[V]) extends GenFormula[V] {
@@ -718,26 +668,14 @@ case class Release[V](interval: Interval, arg1: GenFormula[V], arg2: GenFormula[
 case class Let[V](p:Pred[V],f:GenFormula[V], g:GenFormula[V]) extends GenFormula[V]{
   require(p.freeVariables == f.freeVariables)
 
-  private def explode(pred: Pred[V],inst:Iterable[Pred[V]]):Iterable[Pred[V]] = {
-    inst.map{
-      ip => {
-        assert(ip.args.length == p.args.length)
-        val map: Map[Term[V],Term[V]] = p.args.zip(ip.args)(collection.breakOut)
-        Pred[V](pred.relation,pred.args.map{
-          case Const(a) => Const[V](a)
-          case v => map.getOrElse(v, v)
-        }:_*)
-      }
-    }
-  }
   override def atoms: Set[Pred[V]] = {
     val (inst, rest) = g.atoms.partition{ _.relation == p.relation}
-    val repl = f.atoms.flatMap(explode(_,inst))
+    val repl = f.atoms.flatMap(GenFormula.explode(_,inst))
     repl union rest
   }
   override def atomsInOrder: Seq[Pred[V]] = {
     val (inst, rest) = g.atomsInOrder.partition{ _.relation == p.relation}
-    val repl = f.atomsInOrder.flatMap(explode(_,inst.toIterable))
+    val repl = f.atomsInOrder.flatMap(GenFormula.explode(_,inst.toIterable))
     repl ++ rest
   }
   override def freeVariables: Set[V] = g.freeVariables
@@ -759,6 +697,70 @@ case class Let[V](p:Pred[V],f:GenFormula[V], g:GenFormula[V]) extends GenFormula
   override def toString: String = s"LET ${p} = ${f} IN \n ${g}"
   override def toQTL: String = g.toQTL ++ " where " ++ p.toQTL ++ " := " ++ f.toQTL
 }
+
+case class Lets[V](ps:Map[Pred[V],GenFormula[V]], g:GenFormula[V]) extends GenFormula[V]{
+  require(ps.keys.forall{ p => p.freeVariables == ps(p).freeVariables})
+
+  override def atoms: Set[Pred[V]] = {
+    g.atoms.foldLeft(Set.empty[Pred[V]]) {
+      (acc, p) =>
+        if (ps.contains(p)) {
+          val inst = g.atoms.filter{ _.relation == p.relation}
+          acc union ps(p).atoms.flatMap(GenFormula.explode(_,inst))
+        } else acc + p
+    }
+  }
+
+  override def atomsInOrder: Seq[Pred[V]] = {
+    g.atomsInOrder.foldLeft(Seq.empty[Pred[V]]) {
+      (acc, p) =>
+        if (ps.contains(p)) {
+          val inst = g.atomsInOrder.filter{ _.relation == p.relation}
+          acc ++ ps(p).atomsInOrder.flatMap(GenFormula.explode(_,inst.toIterable))
+        } else acc :+ p
+    }
+  }
+  override def freeVariables: Set[V] = g.freeVariables
+  override def freeVariablesInOrder: Seq[V] = g.freeVariablesInOrder
+  override def inferTypes(signature: Signature): TypeConstraints[V] = {
+    val sigWithLets = ps.foldLeft(signature){
+      case (sig,(p,f)) =>
+        val fTypes = f.freeVariableTypes(signature)
+        val pTypes = p.args.map({case Var(v) => fTypes(v); case _ => throw new Exception("Unexpected term")})
+        sig + ((p.relation, p.args.length) -> pTypes)
+    }
+    g.inferTypes(sigWithLets)
+  }
+
+  override def map[W](mapper: VariableMapper[V, W]): GenFormula[W] = {
+    val ms = ps.map{
+      case (p,f) =>
+        val m = p.freeVariablesInOrder.foldLeft(mapper){
+          (a:VariableMapper[V, W],v:V) => a.bound(v)._2
+        }
+        (p.map(m),f.map(m))
+    }
+    Lets(ms,g.map(mapper))
+  }
+  override def intervalCheck: List[String] = ps.foldLeft(List.empty[String]){
+    case (acc,(p,f)) => acc ++ p.intervalCheck ++ f.intervalCheck
+  } ++ g.intervalCheck
+
+  override def toString: String = {
+    ps.foldLeft("") {
+      case (acc, (p, f)) => acc + s"LET ${p} = ${f} IN \n"
+    } + s"${g}"
+  }
+
+  override def toQTL: String = {
+    val letsStr = ps.map{
+      case (p,f) => s"${p.toQTL} := ${f.toQTL}"
+    }.mkString(", ")
+    g.toQTL ++ " where " ++ letsStr
+  }
+
+}
+
 
 sealed trait AggregateFunction{
   val op:String
@@ -865,6 +867,137 @@ object GenFormula {
     val freeVariables: Map[String, VariableID[String]] =
       phi.freeVariables.toSeq.sorted.zipWithIndex.map{ case (n, i) => (n, new VariableID(n, i)) }(collection.breakOut)
     phi.map(new VariableResolver(freeVariables))
+  }
+
+  private def substituteTerm(t: Term[String], m: Map[String, Term[String]]): Term[String] = t match {
+    case Var(v) => m.getOrElse(v, Var(v))
+    case c @ Const(_) => c
+    case Apply1(f, t1) => Apply1(f, substituteTerm(t1, m))
+    case Apply2(f, t1, t2) => Apply2(f, substituteTerm(t1, m), substituteTerm(t2, m))
+  }
+
+  private def freshAvoiding(hint: String, avoid: Set[String]): String =
+    if (!avoid(hint)) hint
+    else Stream.from(1).map(i => s"${hint}_$i").find(!avoid(_)).get
+
+  /** Capture-avoiding substitution of free variables by terms. */
+  def substituteVars(phi: GenFormula[String], m: Map[String, Term[String]]): GenFormula[String] = {
+    val rangeVars: Set[String] = m.values.flatMap(_.freeVariables).toSet
+    def quant(v: String, arg: GenFormula[String], m: Map[String, Term[String]],
+              mk: (String, GenFormula[String]) => GenFormula[String]): GenFormula[String] = {
+      val m1 = m - v
+      if (rangeVars(v)) {
+        val nv = freshAvoiding(v, rangeVars ++ arg.freeVariables ++ m1.keySet)
+        mk(nv, go(arg, m1 + (v -> Var(nv))))
+      } else mk(v, go(arg, m1))
+    }
+    def go(f: GenFormula[String], m: Map[String, Term[String]]): GenFormula[String] = f match {
+      case True() | False() => f
+      case Rel(op, t1, t2) => Rel(op, substituteTerm(t1, m), substituteTerm(t2, m))
+      case Pred(r, args @ _*) => Pred(r, args.map(substituteTerm(_, m)):_*)
+      case Not(arg) => Not(go(arg, m))
+      case And(arg1, arg2) => And(go(arg1, m), go(arg2, m))
+      case Or(arg1, arg2) => Or(go(arg1, m), go(arg2, m))
+      case All(v, arg) => quant(v, arg, m, All(_, _))
+      case Ex(v, arg) => quant(v, arg, m, Ex(_, _))
+      case Prev(i, arg) => Prev(i, go(arg, m))
+      case Next(i, arg) => Next(i, go(arg, m))
+      case Since(i, arg1, arg2) => Since(i, go(arg1, m), go(arg2, m))
+      case Trigger(i, arg1, arg2) => Trigger(i, go(arg1, m), go(arg2, m))
+      case Until(i, arg1, arg2) => Until(i, go(arg1, m), go(arg2, m))
+      case Release(i, arg1, arg2) => Release(i, go(arg1, m), go(arg2, m))
+      case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
+    }
+    go(phi, m)
+  }
+
+  private def substitutePred(phi: GenFormula[String], name: String, params: Seq[String],
+                             body: GenFormula[String]): GenFormula[String] = phi match {
+    case Pred(r, args @ _*) if r == name && args.length == params.length =>
+      substituteVars(body, params.zip(args).toMap)
+    case True() | False() | Rel(_, _, _) | Pred(_, _*) => phi
+    case Not(arg) => Not(substitutePred(arg, name, params, body))
+    case And(arg1, arg2) => And(substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case Or(arg1, arg2) => Or(substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case All(v, arg) => All(v, substitutePred(arg, name, params, body))
+    case Ex(v, arg) => Ex(v, substitutePred(arg, name, params, body))
+    case Prev(i, arg) => Prev(i, substitutePred(arg, name, params, body))
+    case Next(i, arg) => Next(i, substitutePred(arg, name, params, body))
+    case Since(i, arg1, arg2) => Since(i, substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case Trigger(i, arg1, arg2) => Trigger(i, substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case Until(i, arg1, arg2) => Until(i, substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case Release(i, arg1, arg2) => Release(i, substitutePred(arg1, name, params, body), substitutePred(arg2, name, params, body))
+    case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
+  }
+
+  /** Eliminates LET definitions by substituting their bodies at the use sites. */
+  def expandLets(phi: GenFormula[String]): GenFormula[String] = phi match {
+    case Let(p, f, g) =>
+      val params = p.args.map {
+        case Var(v) => v
+        case t => throw new UnsupportedOperationException(s"LET head parameters must be variables, found: ${t}")
+      }
+      if (params.distinct.length != params.length)
+        throw new UnsupportedOperationException(s"LET head parameters must be distinct: ${p}")
+      substitutePred(expandLets(g), p.relation, params, expandLets(f))
+    case True() | False() | Rel(_, _, _) | Pred(_, _*) => phi
+    case Not(arg) => Not(expandLets(arg))
+    case And(arg1, arg2) => And(expandLets(arg1), expandLets(arg2))
+    case Or(arg1, arg2) => Or(expandLets(arg1), expandLets(arg2))
+    case All(v, arg) => All(v, expandLets(arg))
+    case Ex(v, arg) => Ex(v, expandLets(arg))
+    case Prev(i, arg) => Prev(i, expandLets(arg))
+    case Next(i, arg) => Next(i, expandLets(arg))
+    case Since(i, arg1, arg2) => Since(i, expandLets(arg1), expandLets(arg2))
+    case Trigger(i, arg1, arg2) => Trigger(i, expandLets(arg1), expandLets(arg2))
+    case Until(i, arg1, arg2) => Until(i, expandLets(arg1), expandLets(arg2))
+    case Release(i, arg1, arg2) => Release(i, expandLets(arg1), expandLets(arg2))
+    case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
+  }
+
+  /** Renames bound variables so that no name is bound twice or shadows a free variable;
+    * DejaVu rejects duplicate quantifier names. */
+  def uniquifyBoundVariables(phi: GenFormula[String]): GenFormula[String] = {
+    val used = scala.collection.mutable.Set[String](phi.freeVariables.toSeq:_*)
+    def fresh(hint: String): String = {
+      val name = freshAvoiding(hint, used.toSet)
+      used += name
+      name
+    }
+    def go(f: GenFormula[String], env: Map[String, String]): GenFormula[String] = {
+      def sub(t: Term[String]): Term[String] = substituteTerm(t, env.mapValues(Var[String](_)).toMap)
+      f match {
+        case True() | False() => f
+        case Rel(op, t1, t2) => Rel(op, sub(t1), sub(t2))
+        case Pred(r, args @ _*) => Pred(r, args.map(sub):_*)
+        case Not(arg) => Not(go(arg, env))
+        case And(arg1, arg2) => And(go(arg1, env), go(arg2, env))
+        case Or(arg1, arg2) => Or(go(arg1, env), go(arg2, env))
+        case All(v, arg) => { val nv = fresh(v); All(nv, go(arg, env + (v -> nv))) }
+        case Ex(v, arg) => { val nv = fresh(v); Ex(nv, go(arg, env + (v -> nv))) }
+        case Prev(i, arg) => Prev(i, go(arg, env))
+        case Next(i, arg) => Next(i, go(arg, env))
+        case Since(i, arg1, arg2) => Since(i, go(arg1, env), go(arg2, env))
+        case Trigger(i, arg1, arg2) => Trigger(i, go(arg1, env), go(arg2, env))
+        case Until(i, arg1, arg2) => Until(i, go(arg1, env), go(arg2, env))
+        case Release(i, arg1, arg2) => Release(i, go(arg1, env), go(arg2, env))
+        case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
+      }
+    }
+    go(phi, Map.empty)
+  }
+
+  def explode[V](pred: Pred[V],inst:Iterable[Pred[V]]):Iterable[Pred[V]] = {
+    inst.map{
+      ip => {
+        assert(ip.args.length == pred.args.length)
+        val map: Map[Term[V],Term[V]] = pred.args.zip(ip.args)(collection.breakOut)
+        Pred[V](pred.relation,pred.args.map{
+          case Const(a) => Const[V](a)
+          case v => map.getOrElse(v, v)
+        }:_*)
+      }
+    }
   }
 
   def print(phi: GenFormula[VariableID[String]]): GenFormula[String] = {

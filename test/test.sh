@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# find all the mfotl formulas
-fmas=$(find -f "" .. 2>/dev/null | grep mfotl$)
-for fma in $fmas; do
+test_formula() {
+    local fma=$1
+    local exit_on_error=${2:-false}
 
     echo "Processing $fma"
 
@@ -18,7 +18,10 @@ for fma in $fmas; do
         echo "  ❌ Translation failed for $fma"
         echo "      $(cat $SPEC)"
         rm "$SPEC"
-        continue
+        if [ "$exit_on_error" = true ]; then
+            exit 1
+        fi
+        return 1
     fi
 
     echo "  Parsing $fma..."
@@ -28,23 +31,33 @@ for fma in $fmas; do
         echo "  ❌ Parsing failed for $fma"
         echo "      $(cat parse_out.txt)"
         rm parse_out.txt
-        continue
+        if [ "$exit_on_error" = true ]; then
+            exit 1
+        fi
+        return 1
     fi
-
-    # echo "  Generating monitor for $fma..."
-    # scalac -cp .:dejavu.jar TraceMonitor.scala > /dev/null 2>&1
-    # res=$?
-    # if [ $res -ne 0 ]; then
-    #     echo "  Monitor compilation failed for $fma"
-    #     continue
-    # fi
 
     echo "  ✅ Test passed: $fma" 
 
     rm $SPEC
     rm parse_out.txt   
+    return 0
+}
 
-done
+fma=$1
+
+if [ -z "$fma" ]; then
+    
+    # find all the mfotl formulas
+    fmas=$(find -f "" .. 2>/dev/null | grep mfotl$)
+    for fma in $fmas; do
+        test_formula "$fma" false
+    done
+
+else
+    test_formula "$fma" true
+
+fi
 
 rm -f *.class
 rm -f TraceMonitor.scala

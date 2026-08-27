@@ -61,6 +61,28 @@ Arguments:
 
 
 
+## Testing
+
+Unit tests (parser and QTL translation, including the expected QTL output for the
+supported operators and the rejection of unsupported ones):
+
+```bash
+mvn test
+```
+
+Integration tests compare VeriMon and DejaVu on fixed traces: VeriMon monitors the
+original MFOTL policy, DejaVu monitors the translated QTL policy on the
+boundary-encoded trace, and the reported time points must coincide. They require
+Docker images for both monitors (see `test/integration/README.md`):
+
+```bash
+mvn package -Dmaven.test.skip=true
+cd test/integration && ./run.sh
+```
+
+`test/test.sh` additionally checks that DejaVu's parser accepts the translation of
+every example formula under `examples/`.
+
 ## License
 
 GNU Lesser General Public License, Version 3

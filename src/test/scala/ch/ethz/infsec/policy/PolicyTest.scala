@@ -235,5 +235,142 @@ class PolicyTest extends FunSuite with Matchers {
     qtlString shouldBe expectedQTL
   }
 
+  // ---------------------------------------------------------------------------
+  // QTL translation. The expected strings below are cross-checked by the
+  // integration suite in test/integration, which runs VeriMon on the original
+  // policy and DejaVu on the translated one and compares their verdicts.
+  // ---------------------------------------------------------------------------
+
+  val E = Pred[String]("e")
+
+  private def qtl(policy: String, neg: Boolean = true): String =
+    Policy.parse(policy).right.value.toQTLString(neg, E)
+
+  private def translationError(policy: String): String =
+    intercept[UnsupportedOperationException] { qtl(policy) }.getMessage
+
+  test("QTL translation: predicates become boundary lets of the reference shape") {
+    val (fma, lets) = Policy.parse("PREVIOUS P0(x)").right.value.translateToQTL(E)
+    val lifted = And(E, Prev(Interval.any, Since(Interval.any, Not(E), Pred[String]("P0", Var("x")))))
+    lets shouldBe Map(Pred[String]("_P0", Var("x")) -> lifted)
+    fma shouldBe And(E, Prev(Interval.any, Since(Interval.any, Not(E), Pred[String]("_P0", Var("x")))))
+  }
+
+  test("QTL translation: PREVIOUS refers to the previous database, not the current one") {
+    qtl("PREVIOUS P0(x)") shouldBe
+      "prop fma: ! Exists x. (e() & @  (! e() S  _P0(x))) where _P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
+  test("QTL translation: PREVIOUS TRUE distinguishes the first database") {
+    qtl("PREVIOUS TRUE") shouldBe "prop fma: ! (e() & @  (! e() S  e()))"
+  }
+
+  test("QTL translation: metric PREVIOUS puts the interval on the inner SINCE") {
+    qtl("PREVIOUS [0,2] P0(x)") shouldBe
+      "prop fma: ! Exists x. (e() & @  (! e() S [<= 2 ] _P0(x))) where _P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
+  test("QTL translation: SINCE skips raw positions via the epred disjunct") {
+    qtl("(A(x) AND B(x)) SINCE C(x)") shouldBe
+      "prop fma: ! Exists x. ((((_A(x) & _B(x)) | ! e()) S  _C(x)) & e()) where " +
+        "_A(x) := e() & @  (! e() S  A(x)), _B(x) := e() & @  (! e() S  B(x)), _C(x) := e() & @  (! e() S  C(x))"
+  }
+
+  test("QTL translation: negation is guarded so it cannot hold at raw positions") {
+    qtl("ONCE (NOT P0())") shouldBe
+      "prop fma: ! (((e() | ! e()) S  (! _P0() & e())) & e()) where _P0() := e() & @  (! e() S  P0())"
+    qtl("P1(x) AND (NOT P0(x))") shouldBe
+      "prop fma: ! Exists x. (_P1(x) & (! _P0(x) & e())) where " +
+        "_P1(x) := e() & @  (! e() S  P1(x)), _P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
+  test("QTL translation: equality is guarded so it cannot hold at raw positions") {
+    qtl("(x = 3) AND ONCE P0(x)") shouldBe
+      "prop fma: ! Exists x. ((x = 3 & e()) & (((e() | ! e()) S  _P0(x)) & e())) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
+  test("QTL translation: metric SINCE intervals") {
+    qtl("P1(x) SINCE [0,3) P0(x)") shouldBe
+      "prop fma: ! Exists x. (((_P1(x) | ! e()) S [<= 2 ] _P0(x)) & e()) where " +
+        "_P1(x) := e() & @  (! e() S  P1(x)), _P0(x) := e() & @  (! e() S  P0(x))"
+    qtl("P1(x) SINCE [2,*) P0(x)") shouldBe
+      "prop fma: ! Exists x. (((_P1(x) | ! e()) S [> 1 ] _P0(x)) & e()) where " +
+        "_P1(x) := e() & @  (! e() S  P1(x)), _P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
+  test("QTL translation: LET bodies are expanded at their use sites") {
+    qtl("LET A(x) = P0(x) AND P1(x) IN A(x) SINCE P2(x)") shouldBe
+      "prop fma: ! Exists x. ((((_P0(x) & _P1(x)) | ! e()) S  _P2(x)) & e()) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x)), _P1(x) := e() & @  (! e() S  P1(x)), _P2(x) := e() & @  (! e() S  P2(x))"
+  }
+
+  test("LET expansion substitutes arguments and avoids variable capture") {
+    val phi = Policy.parse("LET A(x) = EXISTS y. Q(x,y) IN A(y)").right.value
+    GenFormula.expandLets(phi) shouldBe Policy.parse("EXISTS y_1. Q(y,y_1)").right.value
+  }
+
+  test("LET expansion resolves nested definitions of the same name by scope") {
+    val phi = Policy.parse("LET A() = P0(1) IN LET A() = A() AND P1(2) IN A()").right.value
+    GenFormula.expandLets(phi) shouldBe Policy.parse("P0(1) AND P1(2)").right.value
+  }
+
+  test("QTL translation: one let per predicate and argument combination") {
+    qtl("P0(x) AND PREVIOUS P0(y)") shouldBe
+      "prop fma: ! Exists y. Exists x. (_P0(x) & (e() & @  (! e() S  _P0(y)))) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x)), _P0(y) := e() & @  (! e() S  P0(y))"
+  }
+
+  test("QTL translation: constant arguments are inlined instead of generating a macro") {
+    qtl("ONCE P0(3)") shouldBe
+      "prop fma: ! (((e() | ! e()) S  (e() & @  (! e() S  P0(3)))) & e())"
+    qtl("""ONCE P0("foo")""") shouldBe
+      """prop fma: ! (((e() | ! e()) S  (e() & @  (! e() S  P0("foo")))) & e())"""
+  }
+
+  test("QTL translation: repeated variable arguments are inlined instead of generating a macro") {
+    qtl("P0(x,x) AND PREVIOUS P1(z)") shouldBe
+      "prop fma: ! Exists z. Exists x. ((e() & @  (! e() S  P0(x, x))) & (e() & @  (! e() S  _P1(z)))) where " +
+        "_P1(z) := e() & @  (! e() S  P1(z))"
+  }
+
+  test("Bound variables are renamed apart so DejaVu accepts shadowed quantifiers") {
+    val phi = Policy.parse("(EXISTS y. P0(y)) AND P1(y)").right.value
+    GenFormula.uniquifyBoundVariables(phi) shouldBe
+      Policy.parse("(EXISTS y_1. P0(y_1)) AND P1(y)").right.value
+    qtl("(EXISTS y. P0(y)) AND P1(y)") shouldBe
+      "prop fma: ! Exists y. (Exists y_1. _P0(y_1) & _P1(y)) where " +
+        "_P0(y_1) := e() & @  (! e() S  P0(y_1)), _P1(y) := e() & @  (! e() S  P1(y))"
+  }
+
+  test("QTL translation: a formula without predicates produces no where clause") {
+    qtl("TRUE") shouldBe "prop fma: ! e()"
+  }
+
+  test("QTL translation: the positive mode restricts verdicts to boundary events") {
+    qtl("PREVIOUS P0(x)", neg = false) shouldBe
+      "prop fma: ! e() | Forall x. (e() & @  (! e() S  _P0(x))) where _P0(x) := e() & @  (! e() S  P0(x))"
+    qtl("TRUE", neg = false) shouldBe "prop fma: ! e() | e()"
+  }
+
+  test("QTL translation: the event predicate must not occur in the formula") {
+    translationError("P0(x) AND e()") should include ("event predicate")
+  }
+
+  test("QTL translation: predicates used with several arities are rejected") {
+    translationError("P0(x) AND PREVIOUS P0(x,y)") should include ("different arities")
+  }
+
+  test("QTL translation: unsupported operators are rejected with a clear error") {
+    translationError("HISTORICALLY P0(x)") should include ("not supported")
+    translationError("NEXT P0(x)") should include ("not supported")
+    translationError("EVENTUALLY P0(x)") should include ("not supported")
+    translationError("P0(x) UNTIL P1(x)") should include ("not supported")
+    translationError("c <- CNT x P0(x)") should include ("not supported")
+  }
+
+  test("QTL translation: double-bounded intervals are rejected") {
+    translationError("P0(x) SINCE [1,3) P1(x)") should include ("Double-bounded")
+  }
 
 }
