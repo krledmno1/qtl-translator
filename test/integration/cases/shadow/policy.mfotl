@@ -1,0 +1,1 @@
+(EXISTS y. P0(y)) AND P1(y)

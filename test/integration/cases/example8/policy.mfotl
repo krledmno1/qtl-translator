@@ -1,0 +1,1 @@
+((P3(x2,x2) AND (P1(x2))) SINCE[0,*) ((EXISTS y1. ((P1(y1) SINCE[0,*) (P0(y1,x2)))))))

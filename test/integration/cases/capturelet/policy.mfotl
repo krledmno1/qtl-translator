@@ -1,0 +1,1 @@
+LET A(x) = EXISTS y. Q(x,y) IN EXISTS z. A(y) AND Q(z,y)
