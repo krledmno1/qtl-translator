@@ -44,7 +44,7 @@ mvn package -Dmaven.test.skip=true          # build the translator (repo root)
 ./run.sh prev letsince                      # selected cases
 ```
 
-Docker images and other knobs are environment variables:
+Docker images and other knobs are environment variables, e.g.:
 
 ```bash
 VERIMON_IMAGE=monpoly_master_mf_image:latest \
@@ -52,6 +52,8 @@ DEJAVU_IMAGE=monitoring-face-dejavu:latest \
 VERIMON_FLAGS=-verified \
 ./run.sh
 ```
+
+You can define your own `VERIMON_IMAGE` and `DEJAVU_IMAGE`.
 
 `VERIMON_IMAGE` must provide the `monpoly` binary (invoked as
 `monpoly -sig ... -formula ... -log ... $VERIMON_FLAGS`, work directory mounted at
@@ -83,10 +85,10 @@ directories with all monitor outputs.
 | strconst     | string constant argument                                         |
 | repvar       | repeated variable argument (inlined, no macro)                   |
 | shadow       | free and bound occurrence of the same variable name              |
-| example1     | `examples/test1.mfotl`: one predicate, permuted variables, under negation |
-| example3     | `examples/test3.mfotl`: negation inside a SINCE left-hand side   |
-| example5     | `examples/test5.mfotl`: metric PREVIOUS plus a negated SINCE     |
-| example6     | `examples/test6.mfotl`: EXISTS under PREVIOUS, negated nullary conjunction |
-| example7     | `examples/test7.mfotl`: PREVIOUS of SINCE and negated ONCE of PREVIOUS |
-| example8     | `examples/test8.mfotl`: EXISTS of SINCE as a SINCE rhs, repeated variable in the lhs |
-| example10    | `examples/test10.mfotl`: repeated variables in a SINCE lhs, negated conjunction |
+| permutedneg  | one predicate, permuted variables, under negation                |
+| negsincelhs  | negation inside a SINCE left-hand side                           |
+| prevnegsince | metric PREVIOUS plus a negated SINCE                             |
+| existsprev   | EXISTS under PREVIOUS, negated nullary conjunction               |
+| nestedprev   | PREVIOUS of SINCE and negated ONCE of PREVIOUS                   |
+| existssince  | EXISTS of SINCE as a SINCE rhs, repeated variable in the lhs     |
+| repvarsince  | repeated variables in a SINCE lhs, negated conjunction           |

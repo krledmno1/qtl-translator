@@ -40,10 +40,11 @@ mvn package
 For example, after building the project, you can run the parser with:
 
 ```bash
-java -jar target/spec-parser-1.0-SNAPSHOT.jar -e e policy.mfotl
+java -jar target/spec-parser-1.0-SNAPSHOT.jar -e e examples/example1.mfotl
 ```
 
-Where `policy.mfotl` is the input MFOTL policy file.
+Where the last argument is the input MFOTL policy file. See `examples/README.md`
+for a step-by-step walkthrough from a policy to the outputs of both monitors.
 
 ```bash
 Usage: java -jar spec-parser.jar [options] --epred <name> <policy-file>

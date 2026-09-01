@@ -1,9 +1,0 @@
-
-LET _A(x) = e() AND (PREVIOUS ((NOT e()) SINCE A(x))) IN
-LET _B(x) = e() AND (PREVIOUS ((NOT e()) SINCE B(x))) IN
-LET _C(x) = e() AND (PREVIOUS ((NOT e()) SINCE C(x))) IN
-LET _D() = e() AND (PREVIOUS ((NOT e()) SINCE D())) IN
-LET dom(x) = (NOT e()) AND ONCE A(x) OR ONCE B(x) OR ONCE C(x) IN
-
-(((_A(x) AND _B(x)) OR dom(x)) SINCE _C(x)) AND e()
-
