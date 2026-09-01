@@ -98,7 +98,8 @@ for name in $CASES; do
         > "$work/verimon.out" 2>&1
     verimon_status=$?
     verimon_tps=$(grep -Eo 'time point [0-9]+' "$work/verimon.out" | awk '{print $3}' | normalize)
-    if [ $verimon_status -ne 0 ]; then
+    # MonPoly reports an unmonitorable formula on stdout and still exits with 0.
+    if [ $verimon_status -ne 0 ] || grep -qi "not monitorable" "$work/verimon.out"; then
         echo "❌ $name: verimon failed (exit $verimon_status)"
         sed 's/^/     /' "$work/verimon.out" | head -5
         fail=$((fail+1)); failed_cases="$failed_cases $name"

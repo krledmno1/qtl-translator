@@ -81,9 +81,6 @@ mvn package -Dmaven.test.skip=true
 cd test/integration && ./run.sh
 ```
 
-`test/test.sh` additionally checks that DejaVu's parser accepts the translation of
-every example formula under `examples/`.
-
 ## License
 
 GNU Lesser General Public License, Version 3

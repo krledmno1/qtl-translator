@@ -77,6 +77,9 @@
                 <artifactId>scala-maven-plugin</artifactId>
                 <version>4.0.1</version>
                 <configuration>
+                    <!-- Incremental compilation intermittently fails with "Failed to find name
+                         hashes" on this mixed Java/Scala module; always recompile fully. -->
+                    <recompileMode>all</recompileMode>
                     <args>
                         <arg>-deprecation</arg>
                     </args>

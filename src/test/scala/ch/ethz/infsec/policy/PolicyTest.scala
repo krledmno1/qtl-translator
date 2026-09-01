@@ -302,6 +302,31 @@ class PolicyTest extends FunSuite with Matchers {
       "prop fma: ! Exists x. (false & _P0(x)) where _P0(x) := e() & @  (! e() S  P0(x))"
   }
 
+  test("QTL translation: inequalities are guarded and printed for DejaVu") {
+    qtl("(x < 30) AND ONCE P0(x)") shouldBe
+      "prop fma: ! Exists x. ((x < 30 & e()) & (((e() | ! e()) S  _P0(x)) & e())) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x))"
+    qtl("Q(x,y) AND (x < y)") shouldBe
+      "prop fma: ! Exists y. Exists x. (_Q(x, y) & (x < y & e())) where _Q(x, y) := e() & @  (! e() S  Q(x, y))"
+  }
+
+  test("QTL translation: inequalities with a constant on the left are mirrored") {
+    qtl("(3 < x) AND ONCE P0(x)") shouldBe qtl("(x > 3) AND ONCE P0(x)")
+    qtl("(3 <= x) AND ONCE P0(x)") shouldBe qtl("(x >= 3) AND ONCE P0(x)")
+    qtl("(30 > x) AND ONCE P0(x)") shouldBe qtl("(x < 30) AND ONCE P0(x)")
+    qtl("(30 >= x) AND ONCE P0(x)") shouldBe qtl("(x <= 30) AND ONCE P0(x)")
+  }
+
+  test("QTL translation: constant-constant inequalities are evaluated statically") {
+    qtl("(3 < 4.5) AND P0(x)") shouldBe
+      "prop fma: ! Exists x. (e() & _P0(x)) where _P0(x) := e() & @  (! e() S  P0(x))"
+    qtl("(4 <= 3) AND P0(x)") shouldBe
+      "prop fma: ! Exists x. (false & _P0(x)) where _P0(x) := e() & @  (! e() S  P0(x))"
+    intercept[UnsupportedOperationException] {
+      Rel(LT(), Const[String]("a"), Const[String]("b")).toQTLString(true, E)
+    }.getMessage should include ("non-numeric")
+  }
+
   test("QTL translation: metric SINCE intervals") {
     qtl("P1(x) SINCE [0,3) P0(x)") shouldBe
       "prop fma: ! Exists x. (((_P1(x) | ! e()) S [<= 2 ] _P0(x)) & e()) where " +

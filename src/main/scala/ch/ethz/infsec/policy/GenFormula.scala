@@ -276,13 +276,6 @@ sealed trait GenFormula[V] extends Serializable {
   def inferTypes(signature: Signature): TypeConstraints[V]
   def map[W](mapper: VariableMapper[V, W]): GenFormula[W]
   def intervalCheck: List[String]
-  def close(neg:Boolean): GenFormula[V] = {
-    def closeFormula(fma:GenFormula[V],vars:List[V]):GenFormula[V] = vars match {
-      case Nil => fma
-      case v::vs => closeFormula(if (neg) Ex(v,fma) else All(v,fma) ,vs)
-    }
-    closeFormula(this, freeVariables.toList)
-  }
 
   def freeVariableTypes(signature: Signature): Map[V, DataType] = {
     val typing = inferTypes(signature).table
@@ -352,11 +345,11 @@ sealed trait GenFormula[V] extends Serializable {
     def rho(f: GenFormula[String]): GenFormula[String] = f match {
       case True() => epred
       case False() => False()
-      // DejaVu only accepts equalities with the variable on the left-hand side.
-      case Rel(EQ(), t1, t2) => (t1, t2) match {
-        case (c @ Const(_), x @ Var(_)) => And(Rel(EQ(), x, c), epred)
-        case (Const(a), Const(b)) => if (a == b) epred else False()
-        case _ => And(Rel(EQ(), t1, t2), epred)
+      // DejaVu only accepts =, <, <=, >, >= with the variable on the left-hand side.
+      case Rel(op @ (EQ() | LT() | LE() | GT() | GE()), t1, t2) => (t1, t2) match {
+        case (c @ Const(_), x @ Var(_)) => And(Rel(GenFormula.mirror(op), x, c), epred)
+        case (Const(a), Const(b)) => if (GenFormula.evalRel(op, a, b)) epred else False()
+        case _ => And(Rel(op, t1, t2), epred)
       }
       case p @ Pred(relation, args @ _*) =>
         if (distinctVarArgs(args)) Pred("_" + relation, args:_*) else lifted(p)
@@ -441,8 +434,8 @@ case class Rel[V](op:Operator, arg1: Term[V],arg2: Term[V]) extends GenFormula[V
  override def intervalCheck: List[String] = Nil
  override def toString: String = s"${arg1} ${op} ${arg2}"
  override def toQTL: String = op match{
-  case EQ() => s"${arg1.toQTL} = ${arg2.toQTL}"
-  case _ => throw new UnsupportedOperationException("Relational operators other than equality not supported in QTL")
+  case EQ() | LT() | LE() | GT() | GE() => s"${arg1.toQTL} ${op.op} ${arg2.toQTL}"
+  case _ => throw new UnsupportedOperationException(s"Relational operator${op}is not supported in QTL")
  }
 }
 
@@ -703,70 +696,6 @@ case class Let[V](p:Pred[V],f:GenFormula[V], g:GenFormula[V]) extends GenFormula
   override def toQTL: String = g.toQTL ++ " where " ++ p.toQTL ++ " := " ++ f.toQTL
 }
 
-case class Lets[V](ps:Map[Pred[V],GenFormula[V]], g:GenFormula[V]) extends GenFormula[V]{
-  require(ps.keys.forall{ p => p.freeVariables == ps(p).freeVariables})
-
-  override def atoms: Set[Pred[V]] = {
-    g.atoms.foldLeft(Set.empty[Pred[V]]) {
-      (acc, p) =>
-        if (ps.contains(p)) {
-          val inst = g.atoms.filter{ _.relation == p.relation}
-          acc union ps(p).atoms.flatMap(GenFormula.explode(_,inst))
-        } else acc + p
-    }
-  }
-
-  override def atomsInOrder: Seq[Pred[V]] = {
-    g.atomsInOrder.foldLeft(Seq.empty[Pred[V]]) {
-      (acc, p) =>
-        if (ps.contains(p)) {
-          val inst = g.atomsInOrder.filter{ _.relation == p.relation}
-          acc ++ ps(p).atomsInOrder.flatMap(GenFormula.explode(_,inst.toIterable))
-        } else acc :+ p
-    }
-  }
-  override def freeVariables: Set[V] = g.freeVariables
-  override def freeVariablesInOrder: Seq[V] = g.freeVariablesInOrder
-  override def inferTypes(signature: Signature): TypeConstraints[V] = {
-    val sigWithLets = ps.foldLeft(signature){
-      case (sig,(p,f)) =>
-        val fTypes = f.freeVariableTypes(signature)
-        val pTypes = p.args.map({case Var(v) => fTypes(v); case _ => throw new Exception("Unexpected term")})
-        sig + ((p.relation, p.args.length) -> pTypes)
-    }
-    g.inferTypes(sigWithLets)
-  }
-
-  override def map[W](mapper: VariableMapper[V, W]): GenFormula[W] = {
-    val ms = ps.map{
-      case (p,f) =>
-        val m = p.freeVariablesInOrder.foldLeft(mapper){
-          (a:VariableMapper[V, W],v:V) => a.bound(v)._2
-        }
-        (p.map(m),f.map(m))
-    }
-    Lets(ms,g.map(mapper))
-  }
-  override def intervalCheck: List[String] = ps.foldLeft(List.empty[String]){
-    case (acc,(p,f)) => acc ++ p.intervalCheck ++ f.intervalCheck
-  } ++ g.intervalCheck
-
-  override def toString: String = {
-    ps.foldLeft("") {
-      case (acc, (p, f)) => acc + s"LET ${p} = ${f} IN \n"
-    } + s"${g}"
-  }
-
-  override def toQTL: String = {
-    val letsStr = ps.map{
-      case (p,f) => s"${p.toQTL} := ${f.toQTL}"
-    }.mkString(", ")
-    g.toQTL ++ " where " ++ letsStr
-  }
-
-}
-
-
 sealed trait AggregateFunction{
   val op:String
   override def toString:String = s" $op "
@@ -872,6 +801,39 @@ object GenFormula {
     val freeVariables: Map[String, VariableID[String]] =
       phi.freeVariables.toSeq.sorted.zipWithIndex.map{ case (n, i) => (n, new VariableID(n, i)) }(collection.breakOut)
     phi.map(new VariableResolver(freeVariables))
+  }
+
+  /** The operator for the mirrored relation: c op x is equivalent to x (mirror op) c. */
+  def mirror(op: Operator): Operator = op match {
+    case LT() => GT()
+    case LE() => GE()
+    case GT() => LT()
+    case GE() => LE()
+    case other => other
+  }
+
+  private def numericValue(v: Any): Option[BigDecimal] = v match {
+    case i: java.lang.Integer => Some(BigDecimal(i.intValue()))
+    case l: java.lang.Long => Some(BigDecimal(l.longValue()))
+    case d: java.lang.Double => Some(BigDecimal(d.doubleValue()))
+    case _ => None
+  }
+
+  /** Statically evaluates a relation between two constants. */
+  def evalRel(op: Operator, a: Any, b: Any): Boolean = op match {
+    case EQ() => a == b
+    case LT() | LE() | GT() | GE() => (numericValue(a), numericValue(b)) match {
+      case (Some(x), Some(y)) => op match {
+        case LT() => x < y
+        case LE() => x <= y
+        case GT() => x > y
+        case GE() => x >= y
+        case _ => throw new IllegalStateException("unreachable")
+      }
+      case _ => throw new UnsupportedOperationException(
+        s"Ordering comparison of non-numeric constants: ${a}${op}${b}")
+    }
+    case _ => throw new UnsupportedOperationException(s"Relational operator${op}is not supported in QTL")
   }
 
   private def substituteTerm(t: Term[String], m: Map[String, Term[String]]): Term[String] = t match {

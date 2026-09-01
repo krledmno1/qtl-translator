@@ -1,0 +1,1 @@
+((ONCE P0(x)) AND (x < 30)) AND (x >= 20)

@@ -75,6 +75,9 @@ directories with all monitor outputs.
 | eqguard      | equality leaves hold only at boundaries                          |
 | eqflip       | `c = x` is flipped to `x = c` (DejaVu needs the variable first)  |
 | eqconst      | `c = c'` is evaluated statically                                 |
+| ineq         | `x < c` / `x >= c` bounds on a quantified variable               |
+| ineqflip     | `c <= x` / `c > x` are mirrored to put the variable first        |
+| ineqvar      | variable-variable inequality `x < y`                             |
 | sinceuntimed | the reference SINCE example                                      |
 | sincele      | SINCE with an upper-bounded interval on a timestamped trace      |
 | sincegt      | SINCE with a lower-bounded interval on a timestamped trace       |
