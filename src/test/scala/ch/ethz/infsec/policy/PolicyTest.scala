@@ -290,6 +290,18 @@ class PolicyTest extends FunSuite with Matchers {
         "_P0(x) := e() & @  (! e() S  P0(x))"
   }
 
+  test("QTL translation: equalities with a constant on the left are flipped") {
+    qtl("(3 = x) AND ONCE P0(x)") shouldBe qtl("(x = 3) AND ONCE P0(x)")
+    qtl("""("foo" = x) AND ONCE P0(x)""") shouldBe qtl("""(x = "foo") AND ONCE P0(x)""")
+  }
+
+  test("QTL translation: constant-constant equalities are evaluated statically") {
+    qtl("(3 = 3) AND P0(x)") shouldBe
+      "prop fma: ! Exists x. (e() & _P0(x)) where _P0(x) := e() & @  (! e() S  P0(x))"
+    qtl("(3 = 4) AND P0(x)") shouldBe
+      "prop fma: ! Exists x. (false & _P0(x)) where _P0(x) := e() & @  (! e() S  P0(x))"
+  }
+
   test("QTL translation: metric SINCE intervals") {
     qtl("P1(x) SINCE [0,3) P0(x)") shouldBe
       "prop fma: ! Exists x. (((_P1(x) | ! e()) S [<= 2 ] _P0(x)) & e()) where " +

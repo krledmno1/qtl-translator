@@ -352,7 +352,12 @@ sealed trait GenFormula[V] extends Serializable {
     def rho(f: GenFormula[String]): GenFormula[String] = f match {
       case True() => epred
       case False() => False()
-      case r @ Rel(EQ(), _, _) => And(r, epred)
+      // DejaVu only accepts equalities with the variable on the left-hand side.
+      case Rel(EQ(), t1, t2) => (t1, t2) match {
+        case (c @ Const(_), x @ Var(_)) => And(Rel(EQ(), x, c), epred)
+        case (Const(a), Const(b)) => if (a == b) epred else False()
+        case _ => And(Rel(EQ(), t1, t2), epred)
+      }
       case p @ Pred(relation, args @ _*) =>
         if (distinctVarArgs(args)) Pred("_" + relation, args:_*) else lifted(p)
       case Not(arg) => And(Not(rho(arg)), epred)

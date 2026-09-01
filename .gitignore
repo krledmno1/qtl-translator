@@ -10,3 +10,4 @@ tmp
 .vscode
 .bloop
 .metals
+*.qtl-*/
