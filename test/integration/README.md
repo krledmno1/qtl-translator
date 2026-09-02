@@ -36,6 +36,17 @@ field (`P,1,ts`, and `e,ts` for the boundary) — that is the format in which th
 version reads time; on a plain `.csv` its clock never advances and interval bounds are
 meaningless.
 
+## Constant registration
+
+DejaVu's quantifiers range over the values it has seen for the quantified variable, which
+never include a constant that occurs only in the policy. When a policy compares a variable
+against a constant, the translator therefore writes those constants to `<dom-predicate>.dom`
+and guards the quantifier with an always false disjunct that mentions the predicate. The
+runner prepends one event per constant to the first time point of the trace, which is where
+the `dejavu.csv` (or `dejavu.timed.csv`) in each work directory comes from; a real pipeline
+uses the replayer's `-init <file>` option instead. The `rigid*` cases below fail without
+this step, as their constants never occur in the trace.
+
 ## Running
 
 ```bash
@@ -78,6 +89,10 @@ directories with all monitor outputs.
 | ineq         | `x < c` / `x >= c` bounds on a quantified variable               |
 | ineqflip     | `c <= x` / `c > x` are mirrored to put the variable first        |
 | ineqvar      | variable-variable inequality `x < y`                             |
+| rigideq      | an equality is the variable's only binder, and its constant is absent from the trace |
+| rigidconst   | a rigid constraint with no predicate at all (`x = 4`)            |
+| rigidle      | an order constraint on an equality-bound variable                |
+| shadowconst  | a bound variable shadowing a free one, only the bound one compared to a constant |
 | sinceuntimed | the reference SINCE example                                      |
 | sincele      | SINCE with an upper-bounded interval on a timestamped trace      |
 | sincegt      | SINCE with a lower-bounded interval on a timestamped trace       |

@@ -56,10 +56,34 @@ The result for `example1`:
 prop fma: ! Exists x3. Exists x2. Exists x1. (((_P0(x3, x1) | ! e()) S  _P2(x3, x2, x1)) & e()) where _P0(x3, x1) := e() & @  (! e() S  P0(x3, x1)), _P2(x3, x2, x1) := e() & @  (! e() S  P2(x3, x2, x1))
 ```
 
-## Step 3: run DejaVu on the translated policy
+If the policy compares a variable against a constant, the translator additionally writes
+those constants to `_dom.dom` (the predicate name is configurable with `-d`), and guards
+the corresponding quantifiers with an extra, always false disjunct
+`| (_dom(x) & e())`. Translating `example2` writes `_dom(30)`, for instance, while
+`example1` and `example3` compare no variable to a constant and write no file. DejaVu's
+quantifiers range over the values it has seen for a variable, which never include a
+constant that occurs only in the policy, so those constants have to be added to the
+trace's first time point:
 
 ```bash
-docker run --rm -v "$PWD":/home/dejavu/work <dejavu-docker-image> example1.qtl example1.csv
+{ [ -f _dom.dom ] && grep -o '([^)]*)' _dom.dom | tr -d '()"' | sed 's/^/_dom,/'; cat example1.csv; } > example1.registered.csv
+```
+
+The `[ -f _dom.dom ]` guard keeps this the same command for every policy: with no constants
+to register the result is just a copy of the trace. For a timed trace the registration events
+carry the first time point's timestamp as well, so append it with
+`sed "s/$/,$(head -1 example1.timed.csv | awk -F, '{print $NF}')/"`.
+In a proper pipeline, the replayer does the same in one step, for any output format, with
+`-init _dom.dom`.
+
+The constants of these three examples happen to occur in their traces as well, so the
+registration events are redundant here. They are what makes the difference for a policy
+whose constant the trace never mentions, as in `test/integration/cases/rigideq/`.
+
+## Step 3: run DejaVu on the translated policy and preprocessed trace
+
+```bash
+docker run --rm -v "$PWD":/home/dejavu/work <dejavu-docker-image> example1.qtl example1.registered.csv
 ```
 
 DejaVu evaluates the property at every event of the encoded trace and reports the
@@ -72,16 +96,18 @@ events where it is violated:
 
 ## Step 4: relate the two outputs
 
-DejaVu's event numbers are 1-based line numbers of `example1.csv`. Every reported
-event is an `e` line, and the number of *preceding* `e` lines is the 0-based time
-point it corresponds to: event 2 is the first `e` (time point 0) and event 4 the
+DejaVu's event numbers are 1-based line numbers of `example1.registered.csv`. Every
+reported event is an `e` line, and the number of *preceding* `e` lines is the 0-based
+time point it corresponds to: event 2 is the first `e` (time point 0) and event 4 the
 second (time point 1) — exactly VeriMon's time points 0 and 1 from Step 1. Because
 of `-n`, DejaVu reports the time points where the policy is satisfied; unlike
-MonPoly it does not print the satisfying valuations.
+MonPoly it does not print the satisfying valuations. Registration events are not `e`
+lines, so they shift the event numbers but leave this correspondence intact.
 
 The expected outputs for the other two examples:
 
-- `example2`: VeriMon `@1 (time point 0): (1,2,30)`; DejaVu `violated on event number 3`.
+- `example2`: VeriMon `@1 (time point 0): (1,2,30)`; DejaVu `violated on event number 4`
+  (event 3 in `example2.csv`, shifted by one by the `_dom,30` line).
 - `example3`: VeriMon time points 1, 2, 3 (valuations `(1) (2) (3)`, `(1) (2) (3)`,
   `(1) (2)`); DejaVu events 7, 15, 21.
 

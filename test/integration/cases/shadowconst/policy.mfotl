@@ -1,0 +1,1 @@
+(EXISTS x. ((x = 4) AND (NOT P0(x)))) AND P1(x)

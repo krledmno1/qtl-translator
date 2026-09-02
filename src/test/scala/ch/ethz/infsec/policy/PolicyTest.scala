@@ -242,18 +242,25 @@ class PolicyTest extends FunSuite with Matchers {
   // ---------------------------------------------------------------------------
 
   val E = Pred[String]("e")
+  val DOM = Pred[String](GenFormula.defaultDomPred)
 
   private def qtl(policy: String, neg: Boolean = true): String =
     Policy.parse(policy).right.value.toQTLString(neg, E)
+
+  /** The constants the translation asks to be registered in the trace. */
+  private def constants(policy: String): Seq[Any] =
+    Policy.parse(policy).right.value.toQTLString(true, E, DOM)._2
 
   private def translationError(policy: String): String =
     intercept[UnsupportedOperationException] { qtl(policy) }.getMessage
 
   test("QTL translation: predicates become boundary lets of the reference shape") {
-    val (fma, lets) = Policy.parse("PREVIOUS P0(x)").right.value.translateToQTL(E)
+    val t = Policy.parse("PREVIOUS P0(x)").right.value.translateToQTL(E, DOM)
     val lifted = And(E, Prev(Interval.any, Since(Interval.any, Not(E), Pred[String]("P0", Var("x")))))
-    lets shouldBe Map(Pred[String]("_P0", Var("x")) -> lifted)
-    fma shouldBe And(E, Prev(Interval.any, Since(Interval.any, Not(E), Pred[String]("_P0", Var("x")))))
+    t.lets shouldBe Map(Pred[String]("_P0", Var("x")) -> lifted)
+    t.formula shouldBe And(E, Prev(Interval.any, Since(Interval.any, Not(E), Pred[String]("_P0", Var("x")))))
+    t.constants shouldBe empty
+    t.domVars shouldBe empty
   }
 
   test("QTL translation: PREVIOUS refers to the previous database, not the current one") {
@@ -286,7 +293,7 @@ class PolicyTest extends FunSuite with Matchers {
 
   test("QTL translation: equality is guarded so it cannot hold at raw positions") {
     qtl("(x = 3) AND ONCE P0(x)") shouldBe
-      "prop fma: ! Exists x. ((x = 3 & e()) & (((e() | ! e()) S  _P0(x)) & e())) where " +
+      "prop fma: ! Exists x. (((x = 3 & e()) & (((e() | ! e()) S  _P0(x)) & e())) | (_dom(x) & e())) where " +
         "_P0(x) := e() & @  (! e() S  P0(x))"
   }
 
@@ -304,7 +311,7 @@ class PolicyTest extends FunSuite with Matchers {
 
   test("QTL translation: inequalities are guarded and printed for DejaVu") {
     qtl("(x < 30) AND ONCE P0(x)") shouldBe
-      "prop fma: ! Exists x. ((x < 30 & e()) & (((e() | ! e()) S  _P0(x)) & e())) where " +
+      "prop fma: ! Exists x. (((x < 30 & e()) & (((e() | ! e()) S  _P0(x)) & e())) | (_dom(x) & e())) where " +
         "_P0(x) := e() & @  (! e() S  P0(x))"
     qtl("Q(x,y) AND (x < y)") shouldBe
       "prop fma: ! Exists y. Exists x. (_Q(x, y) & (x < y & e())) where _Q(x, y) := e() & @  (! e() S  Q(x, y))"
@@ -388,6 +395,84 @@ class PolicyTest extends FunSuite with Matchers {
     qtl("PREVIOUS P0(x)", neg = false) shouldBe
       "prop fma: ! e() | Forall x. (e() & @  (! e() S  _P0(x))) where _P0(x) := e() & @  (! e() S  P0(x))"
     qtl("TRUE", neg = false) shouldBe "prop fma: ! e() | e()"
+  }
+
+  test("Constant registration: quantifiers over a variable compared to a constant are wrapped") {
+    // DejaVu's quantifiers range over the values seen for the variable, so the formula's own
+    // constants have to be registered by a trace event picked up by this (always false) disjunct.
+    qtl("(x = 4) AND (NOT P0(x))") shouldBe
+      "prop fma: ! Exists x. (((x = 4 & e()) & (! _P0(x) & e())) | (_dom(x) & e())) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x))"
+    constants("(x = 4) AND (NOT P0(x))") shouldBe Seq(4L)
+  }
+
+  test("Constant registration: inner quantifiers are wrapped as well") {
+    qtl("EXISTS y. ((y = 4) AND P0(y))") shouldBe
+      "prop fma: ! Exists y. (((y = 4 & e()) & _P0(y)) | (_dom(y) & e())) where " +
+        "_P0(y) := e() & @  (! e() S  P0(y))"
+  }
+
+  test("Constant registration: all relation constants are collected, in order") {
+    constants("(x = 4) AND (x <= 10) AND (NOT P0(x))") shouldBe Seq(4L, 10L)
+    constants("""P0(x) AND (x = "foo")""") shouldBe Seq("foo")
+    // a constant on the left is mirrored, and the same constant is registered only once
+    constants("(4 = x) AND P0(x) AND (x >= 4)") shouldBe Seq(4L)
+  }
+
+  test("Constant registration: only variables compared to a constant are wrapped") {
+    // no constant at all
+    qtl("PREVIOUS P0(x)") should not include ("_dom")
+    // variable-to-variable comparison needs no registration
+    qtl("Q(x,y) AND (x < y)") should not include ("_dom")
+    constants("Q(x,y) AND (x < y)") shouldBe empty
+    // constants that only occur as predicate arguments are matched directly by DejaVu
+    qtl("ONCE P0(3)") should not include ("_dom")
+    constants("ONCE P0(3)") shouldBe empty
+    // a comparison between two constants is evaluated statically and cannot bind a variable
+    qtl("(3 = 3) AND P0(x)") should not include ("_dom")
+    constants("(3 = 3) AND P0(x)") shouldBe empty
+  }
+
+  test("Constant registration: shadowing does not misclassify which variable meets a constant") {
+    // Bound variables are renamed apart before the constants are collected, so a name identifies
+    // its binder; only the occurrence that is really compared to a constant may be wrapped.
+
+    // free x is compared, the bound one is not
+    qtl("(EXISTS x. P0(x)) AND (x = 4)") shouldBe
+      "prop fma: ! Exists x. ((Exists x_1. _P0(x_1) & (x = 4 & e())) | (_dom(x) & e())) where " +
+        "_P0(x_1) := e() & @  (! e() S  P0(x_1))"
+
+    // bound x is compared, the free one is not
+    qtl("(EXISTS x. (x = 4 AND P1(x))) AND P0(x)") shouldBe
+      "prop fma: ! Exists x. (Exists x_1. (((x_1 = 4 & e()) & _P1(x_1)) | (_dom(x_1) & e())) & _P0(x)) where " +
+        "_P1(x_1) := e() & @  (! e() S  P1(x_1)), _P0(x) := e() & @  (! e() S  P0(x))"
+
+    // inner of two bound x is compared
+    qtl("EXISTS x. ((EXISTS x. (x = 4 AND P1(x))) AND P0(x))") shouldBe
+      qtl("(EXISTS x. (x = 4 AND P1(x))) AND P0(x)")
+
+    // outer of two bound x is compared
+    qtl("EXISTS x. ((x = 4) AND P1(x) AND (EXISTS x. P0(x)))") shouldBe
+      "prop fma: ! Exists x. ((((x = 4 & e()) & _P1(x)) & Exists x_1. _P0(x_1)) | (_dom(x) & e())) where " +
+        "_P1(x) := e() & @  (! e() S  P1(x)), _P0(x_1) := e() & @  (! e() S  P0(x_1))"
+  }
+
+  test("Constant registration: a LET argument decides whether its body's constant is registered") {
+    // the parameter is instantiated with a variable, so the comparison can still bind it
+    constants("LET A(x) = (x = 4) IN (A(y) AND P0(y))") shouldBe Seq(4L)
+    // instantiated with a constant, the comparison is decided statically and registers nothing
+    constants("LET A(x) = (x = 4) IN (A(7) AND P0(y))") shouldBe empty
+  }
+
+  test("Constant registration: the domain predicate is configurable and must not occur in the formula") {
+    val alt = Pred[String]("dom")
+    Policy.parse("(x = 4) AND P0(x)").right.value.toQTLString(true, E, alt)._1 shouldBe
+      "prop fma: ! Exists x. (((x = 4 & e()) & _P0(x)) | (dom(x) & e())) where " +
+        "_P0(x) := e() & @  (! e() S  P0(x))"
+    translationError("_dom(x) AND (x = 4)") should include ("domain predicate")
+    intercept[UnsupportedOperationException] {
+      Policy.parse("dom(x) AND (x = 4)").right.value.toQTLString(true, E, alt)
+    }.getMessage should include ("domain predicate")
   }
 
   test("QTL translation: the event predicate must not occur in the formula") {

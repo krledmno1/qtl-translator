@@ -267,6 +267,18 @@ object Interval {
   val any = Interval(0, None)
 }
 
+/** The result of translating an MFOTL formula to QTL.
+  *
+  * @param formula   the translated formula, without the closing quantifiers
+  * @param lets      the boundary definitions, to be emitted in DejaVu's `where` clause
+  * @param constants the constants that must be registered as domain events in the trace
+  * @param domVars   the variables whose quantifiers carry a registration disjunct
+  */
+case class QTLTranslation(formula: GenFormula[String],
+                          lets: ListMap[Pred[String], GenFormula[String]],
+                          constants: Seq[Any],
+                          domVars: Set[String])
+
 sealed trait GenFormula[V] extends Serializable {
 
   def atoms: Set[Pred[V]]
@@ -285,11 +297,11 @@ sealed trait GenFormula[V] extends Serializable {
     }).toMap
   }
 
-  def translateToQTL(epred: Pred[String]): (GenFormula[String], Map[Pred[String],GenFormula[String]]) = {
+  def translateToQTL(epred: Pred[String], dompred: Pred[String]): QTLTranslation = {
     val phi0 = this.asInstanceOf[GenFormula[String]]
 
     // MFOTL LET is a non-recursive definition, so it can be eliminated by substitution.
-    // DejaVu macros cannot express it directly: their expansion requires the call-site
+    // DejaVu rules cannot express it directly: their expansion requires the call-site
     // argument names to coincide with the head parameter names.
     val phi1 = GenFormula.expandLets(phi0)
 
@@ -297,11 +309,17 @@ sealed trait GenFormula[V] extends Serializable {
       throw new UnsupportedOperationException(
         s"The formula must not use the event predicate '${epred.relation}', which marks database boundaries in the translated trace")
 
+    if (phi1.atoms.exists(_.relation == dompred.relation))
+      throw new UnsupportedOperationException(
+        s"The formula must not use the domain predicate '${dompred.relation}', which registers the formula's constants in the translated trace")
+
     for ((rel, preds) <- phi1.atoms.groupBy(_.relation) if preds.map(_.args.length).size > 1)
       throw new UnsupportedOperationException(
         s"Predicate '${rel}' is used with different arities; DejaVu matches events by name only")
 
-    // DejaVu rejects two quantifiers with the same variable name in one formula.
+    // DejaVu rejects two quantifiers with the same variable name in one formula. Renaming the
+    // bound variables apart also makes a variable name identify its binder uniquely, which is
+    // what lets the constant registration below classify variables by name alone.
     val phi = GenFormula.uniquifyBoundVariables(phi1)
 
     def distinctVarArgs(args: Seq[Term[String]]): Boolean = {
@@ -339,6 +357,16 @@ sealed trait GenFormula[V] extends Serializable {
 
     val letsMap = predsToLets(phi, ListMap.empty)
 
+    // DejaVu's quantifiers range over the values that have been seen for the quantified
+    // variable, which never include a constant that occurs only in the formula. Prepending one
+    // dompred event per constant to the trace and evaluating the (always false, since no
+    // position carries two events) disjunct below under the quantifier enters those constants
+    // into the variable's value set, which realizes the standard active domain.
+    val domVars = GenFormula.constRelationVars(phi)
+    def registration(v: String): GenFormula[String] = And(Pred(dompred.relation, Var(v)), epred)
+    def wrap(v: String, body: GenFormula[String]): GenFormula[String] =
+      if (domVars.contains(v)) Or(body, registration(v)) else body
+
     // Every formula produced by rho holds only at positions where e() holds. This invariant is
     // what makes the SINCE and PREVIOUS cases below correct, so the leaves that are true at
     // arbitrary positions (TRUE, equality, negation) must be guarded with e().
@@ -356,8 +384,8 @@ sealed trait GenFormula[V] extends Serializable {
       case Not(arg) => And(Not(rho(arg)), epred)
       case And(arg1, arg2) => And(rho(arg1), rho(arg2))
       case Or(arg1, arg2) => Or(rho(arg1), rho(arg2))
-      case All(bound, arg) => All(bound, rho(arg))
-      case Ex(bound, arg) => Ex(bound, rho(arg))
+      case All(bound, arg) => All(bound, wrap(bound, rho(arg)))
+      case Ex(bound, arg) => Ex(bound, wrap(bound, rho(arg)))
       // The metric constraint sits on the inner SINCE, which measures the time from the
       // previous e() to the last event of the current database. This equals the MFOTL
       // timestamp difference unless the current database is empty.
@@ -366,21 +394,27 @@ sealed trait GenFormula[V] extends Serializable {
       case errf @ _ => throw new UnsupportedOperationException(s"Operator not supported in the QTL translation: ${errf}")
     }
 
-    (rho(phi), letsMap)
+    QTLTranslation(rho(phi), letsMap, GenFormula.relationConstants(phi), domVars)
   }
 
-  def toQTLString(neg:Boolean, epred: Pred[String]):String = {
-    val (fma,lets) = this.translateToQTL(epred)
-    val closed = fma.freeVariables.toList.sorted.foldLeft(fma) {
-      (acc, v) => if (neg) Ex(v, acc) else All(v, acc)
+  def toQTLString(neg:Boolean, epred: Pred[String]):String =
+    toQTLString(neg, epred, Pred[String](GenFormula.defaultDomPred))._1
+
+  /** Returns the QTL property and the constants that must be registered in the trace. */
+  def toQTLString(neg:Boolean, epred: Pred[String], dompred: Pred[String]):(String, Seq[Any]) = {
+    val t = this.translateToQTL(epred, dompred)
+    val closed = t.formula.freeVariables.toList.sorted.foldLeft(t.formula) { (acc, v) =>
+      val body =
+        if (t.domVars.contains(v)) Or(acc, And(Pred(dompred.relation, Var(v)), epred)) else acc
+      if (neg) Ex(v, body) else All(v, body)
     }
     // Without the negation, the formula is relativized to e() positions: DejaVu evaluates the
     // property at every event, and the raw events between two e()s must not count as verdicts.
     val f = if (neg) Not(closed) else GenFormula.implies(epred, closed)
     val letsStr =
-      if (lets.isEmpty) ""
-      else " where " + lets.map{ case (p, body) => s"${p.toQTL} := ${body.toQTL}"}.mkString(", ")
-    "prop fma: " + f.toQTL + letsStr
+      if (t.lets.isEmpty) ""
+      else " where " + t.lets.map{ case (p, body) => s"${p.toQTL} := ${body.toQTL}"}.mkString(", ")
+    ("prop fma: " + f.toQTL + letsStr, t.constants)
   }
   def toQTL:String
 }
@@ -802,6 +836,48 @@ object GenFormula {
       phi.freeVariables.toSeq.sorted.zipWithIndex.map{ case (n, i) => (n, new VariableID(n, i)) }(collection.breakOut)
     phi.map(new VariableResolver(freeVariables))
   }
+
+  /** Default name of the predicate that registers the formula's constants in the trace. */
+  val defaultDomPred: String = "_dom"
+
+  /** The relations of a formula, in order of occurrence. */
+  private def relations(phi: GenFormula[String]): Seq[Rel[String]] = phi match {
+    case r @ Rel(_, _, _) => Seq(r)
+    case Not(a) => relations(a)
+    case And(a, b) => relations(a) ++ relations(b)
+    case Or(a, b) => relations(a) ++ relations(b)
+    case All(_, a) => relations(a)
+    case Ex(_, a) => relations(a)
+    case Prev(_, a) => relations(a)
+    case Next(_, a) => relations(a)
+    case Since(_, a, b) => relations(a) ++ relations(b)
+    case Trigger(_, a, b) => relations(a) ++ relations(b)
+    case Until(_, a, b) => relations(a) ++ relations(b)
+    case Release(_, a, b) => relations(a) ++ relations(b)
+    case Let(_, f, g) => relations(f) ++ relations(g)
+    case _ => Seq.empty
+  }
+
+  // Relations between two constants are evaluated statically, so their constants can never be
+  // the witness of a quantifier and need not be registered.
+  private def constrainedRelations(phi: GenFormula[String]): Seq[Rel[String]] =
+    relations(phi).filter(r => Seq(r.arg1, r.arg2).exists(_.isInstanceOf[Var[String]]))
+
+  /** The constants compared against a variable, in order of first occurrence.
+    *
+    * Requires a formula whose bound variables have been renamed apart with
+    * [[uniquifyBoundVariables]]: both this and [[constRelationVars]] identify a variable by its
+    * name alone, which is only meaningful once no name is bound twice or shadows a free one. */
+  def relationConstants(phi: GenFormula[String]): Seq[Any] =
+    constrainedRelations(phi).flatMap(r => Seq(r.arg1, r.arg2).collect { case Const(c) => c }).distinct
+
+  /** The variables that are compared against a constant. Requires bound variables to have been
+    * renamed apart with [[uniquifyBoundVariables]]; see [[relationConstants]]. */
+  def constRelationVars(phi: GenFormula[String]): Set[String] =
+    constrainedRelations(phi)
+      .filter(r => Seq(r.arg1, r.arg2).exists(_.isInstanceOf[Const[String]]))
+      .flatMap(r => Seq(r.arg1, r.arg2).collect { case Var(v) => v })
+      .toSet
 
   /** The operator for the mirrored relation: c op x is equivalent to x (mirror op) c. */
   def mirror(op: Operator): Operator = op match {

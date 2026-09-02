@@ -11,3 +11,4 @@ tmp
 .bloop
 .metals
 *.qtl-*/
+*.dom

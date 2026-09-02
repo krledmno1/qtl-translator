@@ -54,10 +54,17 @@ Required:
 
 Options:
   -n, --neg              Translate the negation of the policy
+  -d, --dom <name>       Predicate registering the policy's constants in the
+                         trace (default: _dom)
 
 Arguments:
   policy-file            Path to the MFOTL policy file to translate
 ```
+
+If the policy compares a variable against a constant, the translator also writes those
+constants to `<name>.dom`. DejaVu's quantifiers range over the values seen for a variable
+and never include a constant that occurs only in the policy, so these constants have to be
+added to the first time point of the monitored trace.
 
 
 

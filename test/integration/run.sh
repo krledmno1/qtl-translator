@@ -19,6 +19,13 @@
 # indices by counting 'e' events. The test passes if both monitors report exactly the
 # time points listed in 'expected'.
 #
+# If the policy compares a variable against a constant, the translator also writes the
+# constants to <dom-predicate>.dom. Those constants are registered by prepending one
+# event per constant to the trace's first time point, which is what makes DejaVu's
+# quantifiers range over them; the trace DejaVu actually reads is assembled in the work
+# directory as dejavu.csv (or dejavu.timed.csv). In a real pipeline the replayer's
+# -init option adds the same events.
+#
 # Configuration (environment variables):
 #   VERIMON_IMAGE   docker image providing the 'monpoly' binary
 #                   (default: monpoly_master_mf_image:latest)
@@ -28,6 +35,7 @@
 #   VERIMON_FLAGS   extra monpoly flags (default: -verified)
 #   TRANSLATOR_JAR  path to the translator jar
 #   EPRED           name of the database-boundary event (default: e)
+#   DOMPRED         name of the event registering the policy's constants (default: _dom)
 #   KEEP=1          keep per-case work directories
 #
 # Usage: ./run.sh [case ...]     (no arguments: run all cases)
@@ -40,6 +48,7 @@ DEJAVU_IMAGE="${DEJAVU_IMAGE:-monitoring-face-dejavu:latest}"
 VERIMON_FLAGS="${VERIMON_FLAGS:--verified}"
 TRANSLATOR_JAR="${TRANSLATOR_JAR:-$HERE/../../target/spec-parser-1.0-SNAPSHOT.jar}"
 EPRED="${EPRED:-e}"
+DOMPRED="${DOMPRED:-_dom}"
 KEEP="${KEEP:-0}"
 
 WORKROOT="$HERE/work"
@@ -79,20 +88,36 @@ for name in $CASES; do
     cp "$case_dir"/* "$work/"
 
     if [ -f "$work/trace.timed.csv" ]; then
-        csv_name="trace.timed.csv"
+        src_csv="trace.timed.csv"; csv_name="dejavu.timed.csv"
     else
-        csv_name="trace.csv"
+        src_csv="trace.csv"; csv_name="dejavu.csv"
     fi
 
-    # 1. Translate the policy.
-    if ! java -jar "$TRANSLATOR_JAR" -n -e "$EPRED" "$work/policy.mfotl" > "$work/policy.qtl" 2> "$work/translate.err"; then
+    # 1. Translate the policy. The translator writes the constants that have to be registered
+    # in the trace to <dom-predicate>.dom in its working directory.
+    if ! ( cd "$work" && java -jar "$TRANSLATOR_JAR" -n -e "$EPRED" -d "$DOMPRED" policy.mfotl \
+             > policy.qtl 2> translate.err ); then
         echo "❌ $name: translation failed"
         sed 's/^/     /' "$work/policy.qtl" "$work/translate.err"
         fail=$((fail+1)); failed_cases="$failed_cases $name"
         continue
     fi
 
-    # 2. VeriMon on the original policy and log.
+    # 2. Build the DejaVu trace. The registration events belong to the trace's first time point,
+    # i.e. before its first event; in a real pipeline the replayer's -init option adds them.
+    : > "$work/$csv_name"
+    if [ -f "$work/$DOMPRED.dom" ]; then
+        ts=""
+        case "$csv_name" in
+            *.timed.*) ts=",$(head -1 "$work/$src_csv" | awk -F, '{print $NF}')" ;;
+        esac
+        grep -o '([^)]*)' "$work/$DOMPRED.dom" | tr -d '()"' | while read -r constant; do
+            echo "$DOMPRED,$constant$ts" >> "$work/$csv_name"
+        done
+    fi
+    cat "$work/$src_csv" >> "$work/$csv_name"
+
+    # 3. VeriMon on the original policy and log.
     docker run --rm -v "$work":/work "$VERIMON_IMAGE" \
         monpoly -sig /work/trace.sig -formula /work/policy.mfotl -log /work/trace.log $VERIMON_FLAGS \
         > "$work/verimon.out" 2>&1
@@ -106,7 +131,7 @@ for name in $CASES; do
         continue
     fi
 
-    # 3. DejaVu on the translated policy and the encoded trace.
+    # 4. DejaVu on the translated policy and the encoded trace.
     docker run --rm -v "$work":/home/dejavu/work "$DEJAVU_IMAGE" policy.qtl "$csv_name" \
         > "$work/dejavu.out" 2>&1
     if grep -qE "Error during specification|Exception|error:" "$work/dejavu.out"; then

@@ -1,0 +1,1 @@
+(x = 4) AND (x <= 10) AND (NOT P0(x))
